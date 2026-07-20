@@ -3,6 +3,7 @@ config/chroot/
 config/binary/
 config/cache/
 config/.build/
+config/.lock
 config/binary.modified_timestamps
 config/chroot.files
 config/chroot.packages.install
@@ -15,6 +16,10 @@ config/installer_firmware_details.txt
 *.iso
 *.iso.zsync
 *.build.log
+
+# generated roadmap exports (regenerate from ROADMAP.md, don't commit)
+Pacific-Linux-Roadmap.html
+Pacific-Linux-Roadmap.pdf
 
 # editor / OS cruft
 .DS_Store

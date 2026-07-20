@@ -6,9 +6,7 @@ around the region's real conditions: expensive/unreliable bandwidth, aging
 donated hardware, many languages, and routine cyclone/tsunami/earthquake
 exposure.
 
-Full plan: [ROADMAP.md](ROADMAP.md) (also available as
-[Pacific-Linux-Roadmap.pdf](Pacific-Linux-Roadmap.pdf) /
-[.html](Pacific-Linux-Roadmap.html)).
+Full plan: [ROADMAP.md](ROADMAP.md).
 
 ## Status
 
