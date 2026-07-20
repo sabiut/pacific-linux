@@ -22,6 +22,11 @@ scripts/          build and maintenance scripts
 docs/             supporting documentation
 ```
 
+## Installing
+
+See [docs/install-guide.md](docs/install-guide.md) for writing the ISO to a
+USB drive, booting it, and installing to disk.
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md).

@@ -46,6 +46,13 @@ synaptic
 # pacific-linux-notify-updates, see config/config/includes.chroot)
 libnotify-bin
 
+# Welcome app (welcome-app/pacific-linux-welcome) — GTK3 via PyGObject,
+# not GTK4: XFCE's own native apps here are still GTK3 (confirmed:
+# xfdesktop 4.20 reports "Built with GTK+ 3.24"), so this matches rather
+# than adding a second GTK stack for one small first-run window.
+python3-gi
+gir1.2-gtk-3.0
+
 # NOTE: VS Code / VSCodium from the roadmap is deferred — neither ships in
 # Debian's own repos, so including it means adding a third-party apt archive
 # (config/archives/) and trusting its signing key. Revisit once we decide

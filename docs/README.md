@@ -1,5 +1,10 @@
 # docs/
 
-Supporting documentation beyond the top-level ROADMAP.md, README.md, and
-CONTRIBUTING.md — install guides, per-country locale notes, disaster-content
-sourcing, etc. Fills in as those pieces land (Phase 2+).
+Supporting documentation beyond the top-level README.md and
+CONTRIBUTING.md.
+
+- [install-guide.md](install-guide.md) — writing the ISO to a USB drive,
+  booting it, and installing to disk
+
+More fills in as later phases land: per-country locale notes,
+disaster-content sourcing, etc.
