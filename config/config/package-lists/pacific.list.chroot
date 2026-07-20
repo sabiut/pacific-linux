@@ -4,6 +4,13 @@
 # Desktop — XFCE (task-xfce-desktop pulls in xfce4, lightdm, and friends)
 task-xfce-desktop
 
+# Pinned to sid via config/archives/sid.{list,pref}.chroot: trixie's stock
+# xfdesktop4 4.20.1-1 has a confirmed wallpaper-rendering bug (backdrop
+# workspace properties never take effect, no error, no other symptom).
+# 4.20.2-2 fixes it. Every other dependency it needs is already satisfied
+# by trixie's own packages — verified before pinning.
+xfdesktop4
+
 # Boot splash — themed via config/hooks/normal/0100-pacific-linux-plymouth.hook.chroot
 # (our own theme ships via includes.chroot below; plymouth-themes isn't
 # needed and would just add unused theme files to the image)
