@@ -36,6 +36,16 @@ kiwix
 # Installer (present in the live image so the target machine can install to disk)
 calamares
 
+# Software center — Synaptic. Chose it over GNOME Software: no PackageKit
+# or GNOME-stack dependency, fits the low-spec-hardware constraint, and
+# it's a mature, direct apt front-end (install/remove/search/upgrade) that
+# needs no custom UI work for Phase 1.
+synaptic
+
+# Update manager (notify-send is the notification backend for
+# pacific-linux-notify-updates, see config/config/includes.chroot)
+libnotify-bin
+
 # NOTE: VS Code / VSCodium from the roadmap is deferred — neither ships in
 # Debian's own repos, so including it means adding a third-party apt archive
 # (config/archives/) and trusting its signing key. Revisit once we decide

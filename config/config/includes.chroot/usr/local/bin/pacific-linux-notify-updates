@@ -1,0 +1,26 @@
+#!/bin/sh
+# Shows a desktop notification if pacific-linux-update-check (a root-level
+# timer) found upgradable packages. Runs as the logged-in user (via
+# pacific-linux-notify-updates.timer), since notify-send needs a session
+# D-Bus connection. Never fetches or installs anything itself — opening
+# Synaptic to actually apply updates is left to the user.
+
+COUNT_FILE=/var/lib/pacific-linux/update-count
+
+if [ ! -f "$COUNT_FILE" ]; then
+    exit 0
+fi
+
+count="$(cat "$COUNT_FILE")"
+
+case "$count" in
+    ''|*[!0-9]*) exit 0 ;;
+esac
+
+if [ "$count" -gt 0 ]; then
+    notify-send \
+        --icon=software-update-available \
+        --app-name="Pacific Linux" \
+        "Updates available" \
+        "$count package(s) can be updated. Open Synaptic to install them."
+fi
