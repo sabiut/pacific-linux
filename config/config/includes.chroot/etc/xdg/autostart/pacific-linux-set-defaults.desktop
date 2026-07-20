@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Pacific Linux defaults
+Comment=Applies default wallpaper on first login (runs once)
+Exec=/usr/local/bin/pacific-linux-set-defaults
+OnlyShowIn=XFCE;
+NoDisplay=true
+X-GNOME-Autostart-Phase=Application

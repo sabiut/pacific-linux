@@ -4,6 +4,17 @@
 # Desktop — XFCE (task-xfce-desktop pulls in xfce4, lightdm, and friends)
 task-xfce-desktop
 
+# Boot splash — themed via config/hooks/normal/0100-pacific-linux-plymouth.hook.chroot
+# (our own theme ships via includes.chroot below; plymouth-themes isn't
+# needed and would just add unused theme files to the image)
+plymouth
+
+# Icon theme — chose an existing, maintained theme instead of building a
+# custom icon set from scratch; that's a much larger effort than Phase 1
+# branding calls for. Papirus is actively maintained, GTK/XFCE-friendly, and
+# light enough for older hardware.
+papirus-icon-theme
+
 # Browser
 firefox-esr
 

@@ -1,0 +1,26 @@
+#!/bin/sh
+# Applies Pacific Linux desktop defaults on first login. Runs once per user
+# (guarded by a marker file) via an XDG autostart entry, since XFCE's
+# per-monitor xfconf property names (monitorDP-1, monitorVGA-1, ...) vary by
+# hardware and can't be hardcoded reliably at image-build time.
+
+set -e
+
+MARKER="$HOME/.config/pacific-linux/.defaults-applied"
+WALLPAPER="/usr/share/backgrounds/pacific-linux/pacific-ocean.png"
+
+[ -f "$MARKER" ] && exit 0
+
+mkdir -p "$(dirname "$MARKER")"
+
+# Wait for xfdesktop to register its channel properties before querying them.
+for _ in $(seq 1 20); do
+    xfconf-query -c xfce4-desktop -l >/dev/null 2>&1 && break
+    sleep 0.5
+done
+
+xfconf-query -c xfce4-desktop -l 2>/dev/null | grep -E '/last-image$|/image-path$' | while read -r prop; do
+    xfconf-query -c xfce4-desktop -p "$prop" -s "$WALLPAPER" 2>/dev/null || true
+done
+
+touch "$MARKER"

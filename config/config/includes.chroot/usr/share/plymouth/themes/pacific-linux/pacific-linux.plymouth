@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=Pacific Linux
+Description=Boot theme for Pacific Linux — ocean gradient, wayfinding star mark, progress bar
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/pacific-linux
+ScriptFile=/usr/share/plymouth/themes/pacific-linux/pacific-linux.script

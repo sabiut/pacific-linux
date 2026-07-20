@@ -1,0 +1,23 @@
+<svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <circle cx="256" cy="256" r="256" fill="#16232b"/>
+  <circle cx="256" cy="256" r="204" fill="none" stroke="#1f6f74" stroke-opacity="0.25" stroke-width="2"/>
+  <path d="M 46,216 Q 196,116 346,226 T 471,326" fill="none" stroke="#b85f2c" stroke-opacity="0.35" stroke-width="2.5"/>
+  <path d="M 66,346 Q 216,266 326,376 T 456,196" fill="none" stroke="#f6f3ec" stroke-opacity="0.4" stroke-width="2.5"/>
+  <path d="M261.5,242.0 L256.0,60.0 L250.5,242.0 Z" fill="#1f6f74" fill-opacity="1.00"/>
+  <path d="M266.4,245.2 L297.3,156.2 L256.3,241.0 Z" fill="#1f6f74" fill-opacity="0.45"/>
+  <path d="M269.8,250.0 L362.1,149.9 L262.0,242.2 Z" fill="#1f6f74" fill-opacity="0.70"/>
+  <path d="M271.0,255.7 L355.8,214.7 L266.8,245.6 Z" fill="#1f6f74" fill-opacity="0.45"/>
+  <path d="M270.0,261.5 L452.0,256.0 L270.0,250.5 Z" fill="#1f6f74" fill-opacity="1.00"/>
+  <path d="M266.8,266.4 L355.8,297.3 L271.0,256.3 Z" fill="#1f6f74" fill-opacity="0.45"/>
+  <path d="M262.0,269.8 L362.1,362.1 L269.8,262.0 Z" fill="#1f6f74" fill-opacity="0.70"/>
+  <path d="M256.3,271.0 L297.3,355.8 L266.4,266.8 Z" fill="#1f6f74" fill-opacity="0.45"/>
+  <path d="M250.5,270.0 L256.0,452.0 L261.5,270.0 Z" fill="#1f6f74" fill-opacity="1.00"/>
+  <path d="M245.6,266.8 L214.7,355.8 L255.7,271.0 Z" fill="#1f6f74" fill-opacity="0.45"/>
+  <path d="M242.2,262.0 L149.9,362.1 L250.0,269.8 Z" fill="#1f6f74" fill-opacity="0.70"/>
+  <path d="M241.0,256.3 L156.2,297.3 L245.2,266.4 Z" fill="#1f6f74" fill-opacity="0.45"/>
+  <path d="M242.0,250.5 L60.0,256.0 L242.0,261.5 Z" fill="#1f6f74" fill-opacity="1.00"/>
+  <path d="M245.2,245.6 L156.2,214.7 L241.0,255.7 Z" fill="#1f6f74" fill-opacity="0.45"/>
+  <path d="M250.0,242.2 L149.9,149.9 L242.2,250.0 Z" fill="#1f6f74" fill-opacity="0.70"/>
+  <path d="M255.7,241.0 L214.7,156.2 L245.6,245.2 Z" fill="#1f6f74" fill-opacity="0.45"/>
+  <circle cx="256" cy="256" r="11" fill="#b85f2c"/>
+</svg>
