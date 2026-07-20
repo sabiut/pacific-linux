@@ -17,7 +17,8 @@ config/installer_firmware_details.txt
 *.iso.zsync
 *.build.log
 
-# generated roadmap exports (regenerate from ROADMAP.md, don't commit)
+# roadmap kept local-only, not on the public repo
+ROADMAP.md
 Pacific-Linux-Roadmap.html
 Pacific-Linux-Roadmap.pdf
 
