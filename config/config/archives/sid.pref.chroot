@@ -6,11 +6,19 @@
 #
 # Default sid packages to a low priority so nothing else bleeds in from
 # this archive; explicitly boost only the two packages we actually want.
+#
+# IMPORTANT: "n=sid" (Codename), not "a=sid" — sid's Suite/Archive field is
+# actually "unstable"; "sid" is only the codename. Using "a=sid" silently
+# fails to match anything, leaving every sid package at the default
+# priority 500 (tied with trixie), which let apt pull unrelated packages
+# (grub-common, dmsetup, ...) from sid and hit a transient broken
+# dependency there. Verified against real apt-cache policy output before
+# fixing, not just assumed.
 
 Package: *
-Pin: release a=sid
+Pin: release n=sid
 Pin-Priority: 100
 
 Package: xfdesktop4 xfdesktop4-data
-Pin: release a=sid
+Pin: release n=sid
 Pin-Priority: 990
