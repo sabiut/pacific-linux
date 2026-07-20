@@ -36,26 +36,49 @@ for the old hardware this project targets.
   activates the Plymouth theme and rebuilds the initramfs at build time
 - `config/config/includes.chroot/etc/xdg/autostart/pacific-linux-set-defaults.desktop`
   + `.../usr/local/bin/pacific-linux-set-defaults` — sets the default
-  wallpaper on first XFCE login. Done this way (not baked into a config
-  file) because the per-monitor xfconf property namespace isn't known until
-  xfdesktop has actually started and created it.
+  wallpaper on first XFCE login (belt-and-suspenders; see below for the
+  actual fix).
+- `config/config/includes.chroot/etc/skel/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml`
+  — pre-seeds the backdrop xfconf properties before xfdesktop ever
+  constructs itself for a fresh user.
+- `config/config/hooks/normal/0120-pacific-linux-xfdesktop-fix.hook.chroot`
+  — the actual fix (see below).
 
-## Verified by actually booting the ISO (QEMU/KVM)
+## The xfdesktop wallpaper bug (resolved)
+
+trixie ships `xfdesktop4` 4.20.1-1, which has a confirmed bug: it never
+renders a configured custom wallpaper. Extensively verified before
+concluding this — xfconf properties (`image-path`, `last-image`,
+`image-show`, `image-style`, `single-workspace-mode`,
+`single-workspace-number`, pre-seeded before construction via `/etc/skel`)
+were all confirmed correct via direct `xfconf-query`, yet the image was
+**never even opened** (confirmed with `--enable-debug` +
+`G_MESSAGES_DEBUG=all`: zero `GdkPixbuf` calls for our file, though icon
+loads show up fine in the same trace). Reproduced identically on real
+hardware (Blackview mini PC), ruling out a QEMU-only artifact.
+
+**Fix**: `0120-pacific-linux-xfdesktop-fix.hook.chroot` downloads
+`xfdesktop4` and `xfdesktop4-data` 4.20.2-2 directly from the Debian pool
+(sid) by URL and installs them with `apt-get install ./*.deb` after the
+main package set is in — 4.20.2 doesn't have the bug. Every other library
+`xfdesktop4` 4.20.2 depends on is already satisfied by trixie's own
+package versions (verified against the real `.deb` control file);
+`xfdesktop4-data` has no dependencies of its own.
+
+This is a direct download + `dpkg`-level install, deliberately **not** an
+apt source pin — an earlier attempt to add sid as a low-priority pinned
+archive broke live-build's own `installer_debian-installer` script (it
+checks package availability via `apt-cache show | wc -l -eq 1`, which
+breaks the moment any second suite has a same-named package, regardless
+of pin priority). The direct-download approach also means nothing
+sid-related ever ships in the final image.
+
+## Verified by actually booting the ISO (QEMU/KVM + real hardware)
 
 - **Plymouth boot theme** — confirmed working: background, centered mark,
   progress bar all render correctly during boot.
 - **Boot menu / installer branding** — confirmed correct (Debian's isolinux
   menu shows the right build metadata; base XFCE desktop boots fine).
-- **Desktop wallpaper — confirmed NOT working, root cause still open.** The
-  first-login script does run (marker file created at boot time) and does
-  correctly write `image-path`, `last-image`, and `image-show=true` in
-  xfconf for every monitor found (verified directly with `xfconf-query`,
-  values are exactly right). But the rendered XFCE desktop never picks up
-  the change — not via the script, not via `xfdesktop --reload`, not via
-  fully killing and restarting `xfdesktop`. The data layer is provably
-  correct; something in xfdesktop's actual repaint isn't happening in this
-  test environment (headless QEMU, std VGA, no real compositor session
-  during manual testing). Needs a check on real hardware, or someone more
-  familiar with this XFCE version's rendering internals, before trusting
-  this to work for real users. Left the script fix in (it's strictly more
-  correct than before) but do not consider this closed.
+- **Desktop wallpaper — confirmed working** after the xfdesktop4 4.20.2
+  fix above. Verified on a fresh boot with zero manual intervention: the
+  ocean wallpaper renders correctly on first login.
