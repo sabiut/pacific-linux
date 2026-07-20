@@ -1,16 +1,21 @@
 #!/bin/sh
 # Applies Pacific Linux desktop defaults on first login. Runs once per user
-# (guarded by a marker file) via an XDG autostart entry, since the per-monitor
-# xfconf property namespace (monitor0, monitor1, ...) isn't known until
-# xfdesktop has actually started and created it — can't hardcode at
-# image-build time.
+# (guarded by a marker file) via an XDG autostart entry.
 #
-# KNOWN ISSUE: even with image-path/last-image/image-show all verified
-# correct in xfconf, xfdesktop was not observed to visually pick up the new
-# wallpaper in VM boot testing (reload and full xfdesktop restart both
-# tried). The property writes are confirmed correct; something downstream in
-# xfdesktop's rendering is not refreshing. Needs verification on real
-# hardware / a full session before trusting this to work end-to-end.
+# The PRIMARY fix for the wallpaper is a pre-seeded
+# /etc/skel/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml,
+# copied into each fresh live user's home by live-boot before xfdesktop ever
+# constructs itself. Root cause (confirmed via extensive boot testing): with
+# xfdesktop 4.20, the wallpaper actually shown is controlled by
+# /backdrop/single-workspace-mode + /backdrop/single-workspace-number,
+# neither of which exist by default — without them, xfdesktop won't read the
+# per-workspace last-image property no matter when it's set, including via
+# --reload or a full process restart after the fact. They must exist before
+# xfdesktop's first construction, which a runtime script can't guarantee.
+#
+# This script is defense-in-depth only, in case skel copying has any edge
+# case: it re-asserts the same properties for whatever monitor names
+# actually exist on this hardware.
 
 MARKER="$HOME/.config/pacific-linux/.defaults-applied"
 WALLPAPER="/usr/share/backgrounds/pacific-linux/pacific-ocean.png"
@@ -31,10 +36,17 @@ while [ "$i" -lt 20 ]; do
     sleep 0.5
 done
 
+xfconf-query -c xfce4-desktop -p /backdrop/single-workspace-mode -n -t bool -s true 2>/dev/null
+xfconf-query -c xfce4-desktop -p /backdrop/single-workspace-number -n -t int -s 0 2>/dev/null
+
 xfconf-query -c xfce4-desktop -l 2>/dev/null | grep -E '/image-path$' | while read -r prop; do
+    monitor_path="${prop%image-path}"
     xfconf-query -c xfce4-desktop -p "$prop" -s "$WALLPAPER" 2>/dev/null
-    xfconf-query -c xfce4-desktop -p "${prop%image-path}last-image" -s "$WALLPAPER" 2>/dev/null
-    xfconf-query -c xfce4-desktop -p "${prop%image-path}image-show" -n -t bool -s true 2>/dev/null
+    xfconf-query -c xfce4-desktop -p "${monitor_path}last-image" -s "$WALLPAPER" 2>/dev/null
+    xfconf-query -c xfce4-desktop -p "${monitor_path}last-single-image" -s "$WALLPAPER" 2>/dev/null
+    xfconf-query -c xfce4-desktop -p "${monitor_path}image-show" -n -t bool -s true 2>/dev/null
+    xfconf-query -c xfce4-desktop -p "${monitor_path}workspace0/last-image" -n -t string -s "$WALLPAPER" 2>/dev/null
+    xfconf-query -c xfce4-desktop -p "${monitor_path}workspace0/image-style" -n -t int -s 5 2>/dev/null
 done
 
 xfdesktop --reload 2>/dev/null
