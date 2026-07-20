@@ -23,19 +23,28 @@ jobs:
     name: Build ISO
     needs: lint
     runs-on: ubuntu-latest
+    # Runs inside a real Debian trixie container, not directly on the
+    # ubuntu-latest host — Ubuntu's own live-build package doesn't
+    # correctly template modern Debian suite naming (security.debian.org
+    # trixie-security) when cross-building a trixie target; it falls back
+    # to an old pre-2019 "trixie/updates" path that 404s. --privileged is
+    # needed for the chroot/mount/mknod operations live-build performs.
+    container:
+      image: debian:trixie
+      options: --privileged
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
       - name: Install live-build
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends live-build
+          apt-get update
+          apt-get install -y --no-install-recommends live-build ca-certificates
 
       - name: lb config
         working-directory: config
         run: |
-          sudo lb config \
+          lb config \
             --distribution trixie \
             --archive-areas "main contrib non-free non-free-firmware" \
             --binary-images iso-hybrid \
@@ -43,17 +52,13 @@ jobs:
 
       - name: lb build
         working-directory: config
-        run: sudo lb build
+        run: lb build
 
       - name: Verify the ISO was produced
         working-directory: config
         run: |
           test -f live-image-amd64.hybrid.iso
           file live-image-amd64.hybrid.iso
-
-      - name: Fix artifact ownership
-        working-directory: config
-        run: sudo chown "$(id -u):$(id -g)" live-image-amd64.hybrid.iso
 
       - name: Upload ISO artifact
         uses: actions/upload-artifact@v4
