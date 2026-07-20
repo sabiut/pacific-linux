@@ -33,8 +33,15 @@ gimp
 # Offline knowledge (Kiwix — offline Wikipedia/content reader)
 kiwix
 
-# Installer (present in the live image so the target machine can install to disk)
+# Installer (present in the live image so the target machine can install to
+# disk). The `calamares` package is only the framework — with nothing else,
+# there's no /etc/calamares/settings.conf or module sequence, so it can't
+# actually install anything. calamares-settings-debian provides Debian's
+# real settings/branding/module config; confirmed by inspecting a built
+# image's squashfs (usr/bin/calamares present, /etc/calamares absent
+# entirely) before this was added.
 calamares
+calamares-settings-debian
 
 # Software center — Synaptic. Chose it over GNOME Software: no PackageKit
 # or GNOME-stack dependency, fits the low-spec-hardware constraint, and
