@@ -15,25 +15,59 @@ cd "$(dirname "$0")/.."
 FAIL_LOG="$(mktemp)"
 trap 'rm -f "$FAIL_LOG"' EXIT
 
-check_shell() {
+check_executable() {
     local f="$1"
-    if ! sh -n "$f" 2>&1; then
-        echo "FAIL: $f has a shell syntax error" | tee -a "$FAIL_LOG"
-    fi
     if [ ! -x "$f" ]; then
         echo "FAIL: $f is not executable (live-build requires this)" | tee -a "$FAIL_LOG"
     fi
 }
 
+# Dispatches on the shebang's interpreter rather than assuming shell —
+# includes.chroot/usr/local also holds Python scripts (the welcome app),
+# and running `sh -n` against those would be a false-positive syntax
+# failure, not a real one.
+check_script() {
+    local f="$1"
+    local shebang
+    shebang="$(head -1 "$f" 2>/dev/null)"
+
+    case "$shebang" in
+        '#!'*python*)
+            # Deliberately not `python3 -m py_compile` — it writes a
+            # __pycache__ dir next to the file regardless of
+            # PYTHONDONTWRITEBYTECODE, which under includes.chroot/ would
+            # ship into the built image. compile() in memory has no such
+            # side effect.
+            if ! python3 -c "
+import sys
+with open(sys.argv[1]) as fh:
+    compile(fh.read(), sys.argv[1], 'exec')
+" "$f" 2>&1; then
+                echo "FAIL: $f has a Python syntax error" | tee -a "$FAIL_LOG"
+            fi
+            ;;
+        '#!'*sh|'#!'*bash|'#!'*dash)
+            if ! sh -n "$f" 2>&1; then
+                echo "FAIL: $f has a shell syntax error" | tee -a "$FAIL_LOG"
+            fi
+            ;;
+        '#!'*)
+            echo "NOTE: $f has an unrecognized interpreter ($shebang), skipping syntax check"
+            ;;
+    esac
+
+    check_executable "$f"
+}
+
 echo "== live-build hook scripts =="
 while IFS= read -r -d '' f; do
-    check_shell "$f"
+    check_script "$f"
 done < <(find config/config/hooks -type f \( -name "*.hook.chroot" -o -name "*.hook.binary" \) -print0 2>/dev/null)
 
 echo "== includes.chroot scripts (usr/local) =="
 while IFS= read -r -d '' f; do
     if head -c2 "$f" 2>/dev/null | grep -q '^#!'; then
-        check_shell "$f"
+        check_script "$f"
     fi
 done < <(find config/config/includes.chroot/usr/local -type f -print0 2>/dev/null)
 
