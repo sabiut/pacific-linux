@@ -1,0 +1,38 @@
+#!/bin/sh
+# Replaces trixie's stock xfdesktop4 4.20.1-1 with 4.20.2-2 (from Debian
+# unstable/sid) to fix a confirmed wallpaper-rendering bug: xfconf
+# properties for the desktop backdrop are written correctly (verified
+# directly) but xfdesktop 4.20.1 never renders them — no error, nothing in
+# the journal, the image is never even opened (confirmed with
+# --enable-debug + G_MESSAGES_DEBUG=all). 4.20.2 is expected to fix this.
+#
+# Deliberately NOT done via an ongoing sid apt source
+# (config/archives/*.chroot) — that was tried first and broke live-build's
+# own installer_debian-installer script: it checks package availability
+# with `apt-cache show "^pkg$" | grep Package: | wc -l -eq 1`, which fails
+# the moment two suites both have a same-named package (the count becomes
+# 2), regardless of pin priority. A second suite registered for the whole
+# build has too wide a blast radius for what should be a two-package fix.
+# It would also leave sid permanently enabled on every installed system,
+# which is bad practice for a stable derivative regardless.
+#
+# Every other library dependency xfdesktop4 4.20.2 needs is already
+# satisfied by trixie's own package versions — verified against the real
+# .deb control file before choosing this approach. xfdesktop4-data has no
+# dependencies of its own (pure arch-independent data files).
+
+set -e
+
+WORKDIR="$(mktemp -d)"
+cd "$WORKDIR"
+
+wget -q \
+    "http://ftp.debian.org/debian/pool/main/x/xfdesktop4/xfdesktop4_4.20.2-2_amd64.deb" \
+    "http://ftp.debian.org/debian/pool/main/x/xfdesktop4/xfdesktop4-data_4.20.2-2_all.deb"
+
+apt-get install -y --no-install-recommends \
+    ./xfdesktop4_4.20.2-2_amd64.deb \
+    ./xfdesktop4-data_4.20.2-2_all.deb
+
+cd /
+rm -rf "$WORKDIR"

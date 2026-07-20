@@ -1,15 +1,16 @@
 # Pacific Linux — Phase 1 MVP package set
 # One package name per line. Verified against the trixie repos on 2026-07-20.
 
-# Desktop — XFCE (task-xfce-desktop pulls in xfce4, lightdm, and friends)
+# Desktop — XFCE (task-xfce-desktop pulls in xfce4, lightdm, and friends).
+# task-xfce-desktop pulls trixie's stock xfdesktop4 4.20.1-1, which has a
+# confirmed wallpaper-rendering bug — see
+# config/hooks/normal/0120-pacific-linux-xfdesktop-fix.hook.chroot, which
+# replaces it with 4.20.2 after packages are installed.
 task-xfce-desktop
 
-# Pinned to sid via config/archives/sid.{list,pref}.chroot: trixie's stock
-# xfdesktop4 4.20.1-1 has a confirmed wallpaper-rendering bug (backdrop
-# workspace properties never take effect, no error, no other symptom).
-# 4.20.2-2 fixes it. Every other dependency it needs is already satisfied
-# by trixie's own packages — verified before pinning.
-xfdesktop4
+# wget needed by the xfdesktop4 fix-up hook above to fetch the two .deb
+# files directly (not added as an ongoing apt source — see the hook for why).
+wget
 
 # Boot splash — themed via config/hooks/normal/0100-pacific-linux-plymouth.hook.chroot
 # (our own theme ships via includes.chroot below; plymouth-themes isn't

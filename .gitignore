@@ -10,6 +10,8 @@ config/chroot.packages.live
 config/live-image-*.contents
 config/live-image-*.files
 config/live-image-*.packages
+config/chroot.installed_tmp_pkgs
+config/installer_firmware_details.txt
 *.iso
 *.iso.zsync
 *.build.log
