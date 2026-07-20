@@ -39,7 +39,7 @@ jobs:
       - name: Install live-build
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends live-build ca-certificates
+          apt-get install -y --no-install-recommends live-build ca-certificates file
 
       - name: lb config
         working-directory: config
