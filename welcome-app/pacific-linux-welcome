@@ -42,14 +42,25 @@ window { background-color: #16232b; }
 .section-title { color: #e9e3d6; font-size: 14px; font-weight: bold; }
 .body-text { color: #a9b7bd; font-size: 13px; }
 .coming-soon { color: #6b7880; font-style: italic; }
+/* background-image/box-shadow/border resets are needed because the
+ * desktop theme's default button styling paints a gradient over plain
+ * background-color -- without these the theme's gradient shows through
+ * instead of our teal, leaving white text on a near-white button. */
 button.get-started {
     background-color: #1f6f74;
+    background-image: none;
+    box-shadow: none;
+    border: none;
+    text-shadow: none;
     color: #ffffff;
     font-weight: bold;
     border-radius: 6px;
     padding: 8px 24px;
 }
-button.get-started:hover { background-color: #4fb6ad; }
+button.get-started:hover {
+    background-color: #4fb6ad;
+    background-image: none;
+}
 """
 
 
