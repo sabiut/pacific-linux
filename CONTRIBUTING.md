@@ -1,7 +1,7 @@
 # Contributing to Pacific Linux
 
 Thanks for helping build this. A few ground rules that follow directly from
-the [roadmap](ROADMAP.md):
+the project's phased roadmap:
 
 ## The sequencing principle
 
@@ -33,8 +33,8 @@ Once `locales/` has a `.pot` template (Phase 2), translating is:
 
 - Keep the desktop XFCE-class in resource use — the target machine is an
   8-15 year old donated laptop, not a modern one
-- Don't add features ahead of the phase they belong to (see ROADMAP.md) —
-  small, working increments over speculative scope
+- Don't add features ahead of the phase they belong to — small, working
+  increments over speculative scope
 - Explain platform-specific or region-specific decisions in code comments;
   everything else should be self-explanatory
 

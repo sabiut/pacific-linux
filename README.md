@@ -6,18 +6,6 @@ around the region's real conditions: expensive/unreliable bandwidth, aging
 donated hardware, many languages, and routine cyclone/tsunami/earthquake
 exposure.
 
-Full plan: [ROADMAP.md](ROADMAP.md).
-
-## Status
-
-**Phase 1 — MVP respin, nearly complete.** Boots and installs cleanly,
-verified on both QEMU/KVM and real hardware (a Blackview mini PC): branding
-(logo, wallpaper, Plymouth boot theme), the full preinstalled app set,
-Synaptic as the software center, a low-bandwidth-aware update notifier, and
-the Calamares installer. Remaining Phase 1 item: the custom first-run
-welcome app (language picker). See [ROADMAP.md](ROADMAP.md) for what's
-next after that.
-
 ## Base
 
 - Debian 13 (trixie) stable
