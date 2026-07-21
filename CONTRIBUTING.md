@@ -40,6 +40,24 @@ template and merges the changes into every existing catalog without
 touching translations already done (needs the `gettext` package for
 `xgettext`/`msgmerge`).
 
+## Disaster-readiness content
+
+`disaster-info/content/` has one JSON file per country (Vanuatu and Fiji so
+far) with emergency contacts and cyclone/tsunami/earthquake safety guidance
+— see `disaster-info/content/README.md` for the schema. This content can
+put someone in actual danger if it's wrong, so:
+
+1. Cite an official source (government, meteorological service, NDMO-type
+   agency, or a recognized body like UNESCO-IOC/PTWC/UNDRR) for every fact
+   — not tourism sites or blogs.
+2. If official sources conflict or can't be verified (this happens — e.g.
+   a government site being unreachable, or two official pages disagreeing),
+   say so explicitly in the file's `_editorial_notes` field rather than
+   picking one silently. A flagged gap is far better than a confident wrong
+   answer here.
+3. Open a PR — ideally with review from someone who can verify against the
+   original source or has local knowledge of the country in question.
+
 ## Code changes
 
 - Keep the desktop XFCE-class in resource use — the target machine is an

@@ -18,6 +18,7 @@ config/          live-build configuration (Phase 1)
 branding/         logo, wallpapers, boot splash, icon theme (Phase 1)
 locales/          gettext translation catalogs — en, bi (Phase 2)
 welcome-app/     first-run language picker / setup (Phase 1)
+disaster-info/    offline cyclone/tsunami/earthquake safety info (Phase 2)
 scripts/          build and maintenance scripts
 docs/             supporting documentation
 ```

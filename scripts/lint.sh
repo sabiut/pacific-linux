@@ -46,7 +46,15 @@ with open(sys.argv[1]) as fh:
                 echo "FAIL: $f has a Python syntax error" | tee -a "$FAIL_LOG"
             fi
             ;;
-        '#!'*sh|'#!'*bash|'#!'*dash)
+        '#!'*bash)
+            # bash, not sh -- a script declaring #!/bin/bash may legitimately
+            # use bash-only syntax (arrays, [[ ]], etc.), which sh -n would
+            # false-fail on.
+            if ! bash -n "$f" 2>&1; then
+                echo "FAIL: $f has a shell syntax error" | tee -a "$FAIL_LOG"
+            fi
+            ;;
+        '#!'*sh|'#!'*dash)
             if ! sh -n "$f" 2>&1; then
                 echo "FAIL: $f has a shell syntax error" | tee -a "$FAIL_LOG"
             fi
@@ -97,6 +105,13 @@ while IFS= read -r -d '' f; do
         echo "FAIL: $f is not valid XML/SVG" | tee -a "$FAIL_LOG"
     fi
 done < <(find config/config/bootloaders branding -name "*.svg" -print0 2>/dev/null)
+
+echo "== JSON content (disaster-info/) =="
+while IFS= read -r -d '' f; do
+    if ! python3 -c "import json; json.load(open('$f'))" >/dev/null 2>&1; then
+        echo "FAIL: $f is not valid JSON" | tee -a "$FAIL_LOG"
+    fi
+done < <(find disaster-info -name "*.json" -print0 2>/dev/null)
 
 echo "== gettext catalogs (locales/) =="
 while IFS= read -r -d '' f; do
