@@ -10,11 +10,12 @@ cd "$(dirname "$0")/.."
 DEST_ROOT="config/config/includes.chroot/usr/share/pacific-linux/locales"
 rm -rf "$DEST_ROOT"
 
-for po in locales/*/pacific-linux.po; do
+for po in locales/*/*.po; do
     [ -f "$po" ] || continue
     lang="$(basename "$(dirname "$po")")"
+    domain="$(basename "$po")"
     mkdir -p "$DEST_ROOT/$lang"
-    cp "$po" "$DEST_ROOT/$lang/pacific-linux.po"
+    cp "$po" "$DEST_ROOT/$lang/$domain"
 done
 
 echo "Locale catalogs synced into $DEST_ROOT"
