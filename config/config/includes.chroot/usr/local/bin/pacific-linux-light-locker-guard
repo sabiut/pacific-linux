@@ -1,0 +1,15 @@
+#!/bin/sh
+# Only actually starts light-locker on an installed system. The live
+# session's default user has no real password of their own (unlocking
+# would need the undocumented "live" default live-config sets), so an
+# idle-triggered screen lock there is a usability trap, not a real security
+# feature -- there's no persistent data on a live boot worth protecting.
+#
+# Wired in by overriding light-locker's own autostart entry's Exec= to call
+# this instead of light-locker directly -- see
+# /etc/xdg/autostart/light-locker.desktop.
+if grep -qw boot=live /proc/cmdline 2>/dev/null; then
+    exit 0
+fi
+
+exec light-locker "$@"

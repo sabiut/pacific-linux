@@ -51,7 +51,8 @@ jobs:
             --distribution trixie \
             --archive-areas "main contrib non-free non-free-firmware" \
             --binary-images iso-hybrid \
-            --debian-installer none
+            --debian-installer none \
+            --iso-volume "Pacific Linux"
 
       - name: lb build
         working-directory: config
