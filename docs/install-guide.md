@@ -19,14 +19,17 @@ lb config \
   --distribution trixie \
   --archive-areas "main contrib non-free non-free-firmware" \
   --binary-images iso-hybrid \
-  --debian-installer none
+  --debian-installer none \
+  --iso-volume "Pacific Linux"
 sudo lb build
 ```
 
 (`--debian-installer none` is deliberate: Calamares, launched from the live desktop, is the
 only install-to-disk path here — see step 5 below. The classic Debian Installer was briefly
 wired into the boot menu too before this was caught; having two different, inconsistent
-installers on one image was more confusing than helpful.)
+installers on one image was more confusing than helpful. `--iso-volume` overrides live-build's
+own default of "Debian (trixie) (<date>)", which otherwise shows up as the disc's name
+wherever it's mounted — including as a desktop icon in the live session itself.)
 
 This produces `config/live-image-amd64.hybrid.iso` (~2.9GB). Building from source needs root
 (for the chroot/debootstrap steps) and takes anywhere from 15 minutes to over an hour depending
