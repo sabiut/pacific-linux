@@ -106,12 +106,12 @@ while IFS= read -r -d '' f; do
     fi
 done < <(find config/config/bootloaders branding -name "*.svg" -print0 2>/dev/null)
 
-echo "== JSON content (disaster-info/) =="
+echo "== JSON content (disaster-info/, services-directory/) =="
 while IFS= read -r -d '' f; do
     if ! python3 -c "import json; json.load(open('$f'))" >/dev/null 2>&1; then
         echo "FAIL: $f is not valid JSON" | tee -a "$FAIL_LOG"
     fi
-done < <(find disaster-info -name "*.json" -print0 2>/dev/null)
+done < <(find disaster-info services-directory -name "*.json" -print0 2>/dev/null)
 
 echo "== gettext catalogs (locales/) =="
 while IFS= read -r -d '' f; do

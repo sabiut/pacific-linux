@@ -19,6 +19,8 @@ branding/         logo, wallpapers, boot splash, icon theme (Phase 1)
 locales/          gettext translation catalogs — en, bi (Phase 2)
 welcome-app/     first-run language picker / setup (Phase 1)
 disaster-info/    offline cyclone/tsunami/earthquake safety info (Phase 2)
+services-directory/ offline government/health/education directory (Phase 2)
+kiwix-content/    curated offline-content download guide (Phase 2)
 scripts/          build and maintenance scripts
 docs/             supporting documentation
 ```

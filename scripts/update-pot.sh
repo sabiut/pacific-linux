@@ -12,6 +12,7 @@ cd "$(dirname "$0")/.."
 DOMAINS=(
     "pacific-linux:welcome-app/pacific-linux-welcome"
     "pacific-linux-disaster:disaster-info/pacific-linux-disaster-info"
+    "pacific-linux-services:services-directory/pacific-linux-services-directory"
 )
 
 for entry in "${DOMAINS[@]}"; do
