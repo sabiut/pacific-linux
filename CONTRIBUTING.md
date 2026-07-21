@@ -40,16 +40,19 @@ template and merges the changes into every existing catalog without
 touching translations already done (needs the `gettext` package for
 `xgettext`/`msgmerge`).
 
-## Disaster-readiness content
+## Country content (disaster-readiness, services directory)
 
-`disaster-info/content/` has one JSON file per country (Vanuatu and Fiji so
-far) with emergency contacts and cyclone/tsunami/earthquake safety guidance
-— see `disaster-info/content/README.md` for the schema. This content can
-put someone in actual danger if it's wrong, so:
+Both `disaster-info/content/` and `services-directory/content/` have one
+JSON file per country (Vanuatu and Fiji so far) — emergency contacts and
+cyclone/tsunami/earthquake safety guidance in the former, government
+e-services/health facilities/education resources in the latter. See each
+directory's `content/README.md` for its schema. Disaster-readiness content
+especially can put someone in actual danger if it's wrong, so both hold to
+the same standard:
 
-1. Cite an official source (government, meteorological service, NDMO-type
-   agency, or a recognized body like UNESCO-IOC/PTWC/UNDRR) for every fact
-   — not tourism sites or blogs.
+1. Cite an official source (government agency, ministry, meteorological
+   service, or a recognized body like UNESCO-IOC/PTWC/UNDRR) for every
+   fact — not tourism sites or blogs.
 2. If official sources conflict or can't be verified (this happens — e.g.
    a government site being unreachable, or two official pages disagreeing),
    say so explicitly in the file's `_editorial_notes` field rather than
