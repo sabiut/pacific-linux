@@ -91,6 +91,13 @@ while IFS= read -r -d '' f; do
     fi
 done < <(find config/config/includes.chroot -name "*.xml" -print0 2>/dev/null)
 
+echo "== SVG files (config/config/bootloaders/, branding/) =="
+while IFS= read -r -d '' f; do
+    if ! python3 -c "import xml.dom.minidom as m; m.parse('$f')" >/dev/null 2>&1; then
+        echo "FAIL: $f is not valid XML/SVG" | tee -a "$FAIL_LOG"
+    fi
+done < <(find config/config/bootloaders branding -name "*.svg" -print0 2>/dev/null)
+
 echo "== gettext catalogs (locales/) =="
 while IFS= read -r -d '' f; do
     if ! msgfmt --check -o /dev/null "$f" 2>&1; then

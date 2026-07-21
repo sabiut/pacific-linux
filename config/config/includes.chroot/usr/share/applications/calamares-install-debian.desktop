@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Install Pacific Linux
+GenericName=Calamares Installer
+Exec=calamares-install-debian
+Comment=Calamares — Install Pacific Linux to disk
+Keywords=calamares;system;install;pacific;linux;installer
+Icon=/usr/share/pixmaps/pacific-linux.png
+Terminal=false
+Categories=Qt;System;
+StartupWMClass=calamares
+StartupNotify=True
