@@ -19,9 +19,14 @@ lb config \
   --distribution trixie \
   --archive-areas "main contrib non-free non-free-firmware" \
   --binary-images iso-hybrid \
-  --debian-installer live
+  --debian-installer none
 sudo lb build
 ```
+
+(`--debian-installer none` is deliberate: Calamares, launched from the live desktop, is the
+only install-to-disk path here — see step 5 below. The classic Debian Installer was briefly
+wired into the boot menu too before this was caught; having two different, inconsistent
+installers on one image was more confusing than helpful.)
 
 This produces `config/live-image-amd64.hybrid.iso` (~2.9GB). Building from source needs root
 (for the chroot/debootstrap steps) and takes anywhere from 15 minutes to over an hour depending
@@ -63,11 +68,11 @@ You'll land on a boot menu with these options:
 ```
 Live system (amd64)
 Live system (amd64 fail-safe mode)
-Start installer
-Start installer with speech synthesis
-Advanced install options
 Utilities
 ```
+
+("Utilities" is just a hardware-detection tool, unrelated to installing — live-build ships it
+on every image.)
 
 ## 4. Try it live first (recommended)
 
@@ -81,8 +86,8 @@ If a machine has unusual graphics hardware and the regular option doesn't boot c
 
 ## 5. Install to disk
 
-When you're ready, either select **Start installer** directly from the boot menu, or launch the
-installer from the applications menu once inside the live desktop. This runs
+When you're ready, boot into the live desktop (step 4) and launch **Install System** from the
+applications menu (this is Calamares' own menu entry). It runs
 [Calamares](https://calamares.io/), which walks through the standard steps:
 
 1. **Welcome** — language for the installer itself
