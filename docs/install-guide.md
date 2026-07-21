@@ -100,12 +100,16 @@ applications menu (this is Calamares' own menu entry). It runs
 7. **Install** — copies the system to disk; takes several minutes
 8. **Finish** — reboot into your installed system
 
-> **Not yet independently verified in this repo**: the live boot experience (menu, live session,
-> desktop, welcome app) has been tested extensively on both a VM and real hardware. The Calamares
-> install-to-disk flow itself — actually completing all the steps above and confirming the
-> resulting installed system boots — has not yet been walked through end-to-end here. If you hit
-> anything unexpected during installation, please open an issue with what step failed and what
-> hardware you're on.
+> **Verified end-to-end**: the full flow above — Erase Disk, Users, Summary, Install, Finish —
+> has been walked through in a QEMU/KVM VM, including confirming the resulting installed system
+> reboots to a working login screen, logs in, and loads the desktop correctly. If you hit
+> anything unexpected, please open an issue with what step failed and what hardware you're on.
+>
+> **Known cosmetic gap**: Calamares currently shows Debian's own branding (its logo, "Install
+> Debian" wording on the desktop shortcut, generic slideshow) instead of Pacific Linux's. The
+> package that gives Calamares its working configuration (`calamares-settings-debian`) ships
+> that branding by default, and a Pacific Linux–specific override hasn't been built yet. It
+> doesn't affect what the installer actually does (partitioning, user creation, installing).
 
 ## After installing
 

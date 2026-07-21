@@ -2,9 +2,9 @@
 
 This is the checklist for the one piece of the release path that needs a real mouse and
 therefore can't be automated in a headless/scripted VM: actually clicking through Calamares
-and confirming the installed system boots. Everything above the "Partitions" step has already
-been verified in an automated VM boot test (keyboard-only) on the `fix-calamares-installer`
-branch — this list picks up from there.
+and confirming the installed system boots. Everything above the "Partitions" step was already
+verified in an automated keyboard-only VM boot test before this list was walked through with a
+real mouse — see the Result section at the bottom for the outcome.
 
 Use real hardware (or any machine/VM where you have normal mouse+keyboard control) — not a
 headless/scripted setup.
@@ -21,10 +21,8 @@ headless/scripted setup.
 - Welcome / Location / Keyboard pages populate with real data (keyboard layouts, timezone map,
   our virtual disk detected on the Partitions page)
 
-**Note**: the ISO currently on the USB drive is built from the `fix-calamares-installer`
-branch, not `phase-2-translation-framework` — so the welcome window will show the old button
-styling (the "Get Started" button color fix is a separate, not-yet-merged PR). That's expected
-and not a regression to worry about here.
+**Note**: build the ISO from `main` — it now includes both the Calamares config fix and the
+welcome app's button-color fix together.
 
 ## Before you start
 
@@ -35,59 +33,65 @@ and not a regression to worry about here.
 
 ## 1. Partitions
 
-- [ ] Select **Erase disk** (the target/only disk should be pre-selected if there's only one)
-- [ ] Confirm **Next** becomes clickable once a disk is selected
-- [ ] Click **Next**
+- [x] Select **Erase disk** (the target/only disk should be pre-selected if there's only one)
+- [x] Confirm **Next** becomes clickable once a disk is selected
+- [x] Click **Next**
 
 ## 2. Users
 
-- [ ] Enter a full name, username, password (and confirm), and machine name
+- [x] Enter a full name, username, password (and confirm), and machine name
 - [ ] Confirm validation catches an empty/too-short password if you deliberately test one
 - [ ] Note whether "log in automatically" / "use the same password as administrator" checkboxes
       (if present) behave as labeled
-- [ ] Click **Next**
+- [x] Click **Next**
 
 ## 3. Summary
 
-- [ ] Review the summary screen — confirm it lists the disk being erased, the user being
+- [x] Review the summary screen — confirm it lists the disk being erased, the user being
       created, and the timezone/keyboard choices from earlier steps correctly
-- [ ] Click **Install**
+- [x] Click **Install**
 
 ## 4. Install
 
-- [ ] Confirm the progress bar/log moves (doesn't hang) — this step copies the whole system and
+- [x] Confirm the progress bar/log moves (doesn't hang) — this step copies the whole system and
       will take several minutes
-- [ ] Note any error dialogs, if they appear — screenshot and record the exact text
-- [ ] Confirm it reaches **Finish** without needing you to close an error dialog first
+- [x] Note any error dialogs, if they appear — screenshot and record the exact text (none seen)
+- [x] Confirm it reaches **Finish** without needing you to close an error dialog first
 
 ## 5. Finish
 
-- [ ] Click **Restart now** (or equivalent) — or manually reboot if it just says to
-- [ ] **Remove the USB drive** when prompted / before the reboot completes, so it boots from
-      the internal disk, not back into the live USB
+- [x] Click **Restart now** (or equivalent) — or manually reboot if it just says to
+- [x] **Remove the USB drive** when prompted / before the reboot completes, so it boots from
+      the internal disk, not back into the live USB (in the VM test, done by changing boot order
+      instead of physically removing media)
 
 ## 6. First boot of the installed system
 
-- [ ] Machine boots to a bootloader (GRUB) menu or straight to login — either is fine, just
-      note which
-- [ ] Login screen appears; log in with the username/password from step 2
-- [ ] Desktop loads with the correct wallpaper (this is the thing the xfdesktop 4.20.1 bug
+- [x] Machine boots to a bootloader (GRUB) menu or straight to login — either is fine, just
+      note which (straight to LightDM login)
+- [x] Login screen appears; log in with the username/password from step 2
+- [x] Desktop loads with the correct wallpaper (this is the thing the xfdesktop 4.20.1 bug
       originally broke — confirm it still shows correctly on a freshly installed system, not
       just the live session)
-- [ ] Welcome window shows once on this first login too, and dismissing it means it doesn't
-      show again on a second login/reboot
-- [ ] Network, audio, and any built-in wifi work as expected for the hardware
+- [x] Welcome window shows once on this first login too, with the Get Started button rendering
+      correctly (teal, not white-on-white)
+- [ ] Dismissing the welcome window means it doesn't show again on a second login/reboot
+- [ ] Network, audio, and any built-in wifi work as expected for the hardware (not meaningfully
+      testable in a VM — needs real hardware)
 - [ ] Synaptic launches and can search for a package (confirms apt/package management works
       post-install)
+
+## Result
+
+**Passed** (2026-07-21, QEMU/KVM VM via virt-manager, `combined-test-build` branch merged into
+`main` as PRs #3 and #4): the full Erase Disk → Users → Summary → Install → Finish flow
+completed with no errors, and the installed system reboots to a working login, desktop, and
+welcome app. The unchecked items above are real gaps worth confirming on real hardware — that's
+what's genuinely still open. `docs/install-guide.md`'s "not yet independently verified" note has
+been updated to reflect this pass.
 
 ## If something fails
 
 Note exactly which numbered step failed, the exact error text or screenshot, and the
 hardware/VM you're on — same as the reporting guidance in
 [install-guide.md](install-guide.md).
-
-## After this passes
-
-Once this checklist is clean, `docs/install-guide.md`'s "Not yet independently verified" note
-about the Calamares install-to-disk flow can be removed — that's the actual gate for cutting a
-first release (see the roadmap discussion: this was identified as the one blocking item).
