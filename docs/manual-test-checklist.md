@@ -26,9 +26,9 @@ welcome app's button-color fix together.
 
 ## Before you start
 
-- [ ] The live session's user account is `user` with **no password**, but if it sits idle for
-      a few minutes the screensaver locks it — the unlock password is `live` (not written down
-      anywhere in the product UI yet; that's a known gap to fix separately)
+- [ ] The live session's user account is `user` with **no password** and no longer auto-locks
+      on idle (fixed -- light-locker only actually starts on an installed system now, not a
+      live boot). If you do somehow hit a lock screen on a live session, that's a regression.
 - [ ] Have a way to note down anything that looks wrong (screenshot, or just what step/message)
 
 ## 1. Partitions
