@@ -23,10 +23,9 @@ place to do it — please don't ask for special-casing in the core build.
 ## Translations
 
 `locales/pacific-linux.pot` is the template, extracted from the welcome
-app's source strings. `locales/bi/pacific-linux.po` already exists as a
-scaffold — every string is there, but every `msgstr` is intentionally
-empty, since a guessed machine translation shown to real users is worse
-than admitting Bislama isn't ready yet. To help:
+app's source strings. `locales/bi/pacific-linux.po` (Bislama) is done and
+reviewed by a fluent speaker — v1 ships English and Bislama both. To add
+another language:
 
 1. If your language doesn't have a catalog yet, run
    `msginit --input=locales/pacific-linux.pot --locale=<lang-code> --output=locales/<lang-code>/pacific-linux.po`

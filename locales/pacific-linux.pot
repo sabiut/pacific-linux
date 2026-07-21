@@ -18,59 +18,59 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 
-#: welcome-app/pacific-linux-welcome:74
+#: welcome-app/pacific-linux-welcome:81
 msgid "Welcome to Pacific Linux"
 msgstr ""
 
-#: welcome-app/pacific-linux-welcome:106
+#: welcome-app/pacific-linux-welcome:113
 msgid "Welcome"
 msgstr ""
 
-#: welcome-app/pacific-linux-welcome:117
+#: welcome-app/pacific-linux-welcome:124
 msgid ""
 "A Debian-based desktop built for the Pacific Islands region — designed for "
 "real conditions here: limited bandwidth, older hardware, and routine "
 "cyclone/tsunami/earthquake exposure."
 msgstr ""
 
-#: welcome-app/pacific-linux-welcome:136
+#: welcome-app/pacific-linux-welcome:143
 msgid "Language"
 msgstr ""
 
-#: welcome-app/pacific-linux-welcome:140
+#: welcome-app/pacific-linux-welcome:147
 msgid "English"
 msgstr ""
 
-#: welcome-app/pacific-linux-welcome:146
-msgid "Bislama — translation in progress, coming in a future update"
+#: welcome-app/pacific-linux-welcome:153
+msgid "Bislama"
 msgstr ""
 
-#: welcome-app/pacific-linux-welcome:157
+#: welcome-app/pacific-linux-welcome:162
 msgid "What's included"
 msgstr ""
 
-#: welcome-app/pacific-linux-welcome:58
+#: welcome-app/pacific-linux-welcome:65
 msgid "Web browsing"
 msgstr ""
 
-#: welcome-app/pacific-linux-welcome:59
+#: welcome-app/pacific-linux-welcome:66
 msgid "Documents, spreadsheets, presentations"
 msgstr ""
 
-#: welcome-app/pacific-linux-welcome:60
+#: welcome-app/pacific-linux-welcome:67
 msgid "Image editing"
 msgstr ""
 
-#: welcome-app/pacific-linux-welcome:63
+#: welcome-app/pacific-linux-welcome:70
 msgid ""
 "Offline Wikipedia and Pacific health/agriculture/disaster info — works "
 "with no internet connection"
 msgstr ""
 
-#: welcome-app/pacific-linux-welcome:68
+#: welcome-app/pacific-linux-welcome:75
 msgid "Install or remove software"
 msgstr ""
 
-#: welcome-app/pacific-linux-welcome:182
+#: welcome-app/pacific-linux-welcome:187
 msgid "Get Started"
 msgstr ""

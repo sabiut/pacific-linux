@@ -3,12 +3,9 @@
 
 Shows once per user (guarded by a marker file, same pattern as
 pacific-linux-set-defaults) via an XDG autostart entry. Strings are
-gettext-wrapped and the catalogs live under locales/<lang>/pacific-linux.po,
-but v1 only ships a real English catalog — the language section is honest
-about that rather than pretending to offer languages that don't exist yet.
-Bislama is shown but disabled, not hidden, so people know it's coming
-rather than assuming it was never planned; it stays disabled until its
-catalog has real, reviewed translations rather than an empty scaffold.
+gettext-wrapped and the catalogs live under locales/<lang>/pacific-linux.po.
+English and Bislama both have real, reviewed translations as of Phase 2 --
+see locales/bi/pacific-linux.po.
 """
 
 import gettext
@@ -41,7 +38,6 @@ window { background-color: #16232b; }
 .title { color: #e9e3d6; font-size: 22px; font-weight: bold; }
 .section-title { color: #e9e3d6; font-size: 14px; font-weight: bold; }
 .body-text { color: #a9b7bd; font-size: 13px; }
-.coming-soon { color: #6b7880; font-style: italic; }
 /* background-image/box-shadow/border resets are needed because the
  * desktop theme's default button styling paints a gradient over plain
  * background-color -- without these the theme's gradient shows through
@@ -154,10 +150,8 @@ class WelcomeWindow(Gtk.Window):
 
         bislama = Gtk.RadioButton.new_with_label_from_widget(
             english,
-            _("Bislama — translation in progress, coming in a future update"),
+            _("Bislama"),
         )
-        bislama.set_sensitive(False)
-        bislama.get_style_context().add_class("coming-soon")
         section.pack_start(bislama, False, False, 0)
 
         return section
