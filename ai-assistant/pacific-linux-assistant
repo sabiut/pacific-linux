@@ -1,0 +1,894 @@
+#!/usr/bin/env python3
+"""Pacific AI Assistant -- offline chat assistant (Phase 5 MVP).
+
+Router model: Qwen3-4B via llama.cpp's llama-server, spawned on demand when
+this window opens and stopped when it closes -- RAM is only used while the
+assistant is actually open, matching the project's low-power design
+constraint for old/donated hardware (see ROADMAP.md Phase 5).
+
+Translation is handled by directly prompting this same model rather than a
+dedicated translation pipeline -- see ROADMAP.md's Phase 5 "Decision: no
+dedicated translation model" section for why, and why every response here
+carries a visible disclaimer rather than being treated as authoritative.
+Disaster/safety information stays in the human-reviewed Disaster Readiness
+and Services Directory apps; this assistant does not replace them.
+
+This first version is a working chat MVP: on-demand model + UI. The offline
+knowledge-base/RAG wiring and desktop-action allow-list are later staged
+steps (see ROADMAP.md's Build staging list), not part of this pass.
+"""
+
+import datetime
+import gettext
+import glob
+import json
+import os
+import shutil
+import socket
+import subprocess
+import textwrap
+import threading
+import time
+import urllib.request
+
+import gi
+
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+gi.require_version("Wnck", "3.0")
+from gi.repository import Gdk, GdkPixbuf, GLib, Gtk, Wnck  # noqa: E402
+
+LLAMA_SERVER_BIN = "/opt/pacific-linux/llama.cpp/bin/llama-server"
+MODEL_PATH = "/usr/share/pacific-linux/models/Qwen3-4B-Q4_K_M.gguf"
+LOGO_PATH = "/usr/share/pixmaps/pacific-linux.png"
+SERVER_PORT = 8149
+SERVER_URL = f"http://127.0.0.1:{SERVER_PORT}"
+
+gettext.bindtextdomain("pacific-linux-assistant", "/usr/share/locale")
+gettext.textdomain("pacific-linux-assistant")
+_ = gettext.gettext
+
+CSS = b"""
+window { background-color: #16232b; }
+.header-bar {
+    background-color: #1c2b34;
+    border-bottom: 1px solid #2f4650;
+}
+.title { color: #e9e3d6; font-size: 17px; font-weight: bold; letter-spacing: -0.2px; }
+.disclaimer { color: #6b7880; font-size: 11px; font-style: italic; }
+.status { color: #6b7880; font-size: 12px; }
+.role-label {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+}
+.role-user { color: #4fb6ad; }
+.role-assistant { color: #6b7880; }
+.message-user, .message-assistant {
+    font-size: 13.5px;
+    padding: 10px 14px;
+    border-radius: 12px;
+}
+.message-user {
+    background-color: #1f6f74;
+    color: #ffffff;
+}
+.message-assistant {
+    background-color: #24363f;
+    color: #d7dee1;
+}
+.message-thinking {
+    background-color: #24363f;
+    color: #6b7880;
+    font-style: italic;
+}
+scrolledwindow, viewport { background-color: #16232b; }
+entry {
+    background-color: #1c2b34;
+    color: #e9e3d6;
+    border: 1px solid #2f4650;
+    border-radius: 8px;
+    padding: 8px 12px;
+}
+entry:focus { border-color: #4fb6ad; }
+button.send-button {
+    background-color: #1f6f74;
+    background-image: none;
+    box-shadow: none;
+    border: none;
+    color: #ffffff;
+    font-weight: bold;
+    border-radius: 8px;
+    padding: 8px 22px;
+}
+button.send-button:hover { background-color: #4fb6ad; }
+button.send-button:disabled { background-color: #2f4650; color: #6b7880; }
+"""
+
+
+class AssistantStartupError(Exception):
+    """Raised with a specific, user-facing reason -- the caller must never
+    let a startup failure disappear silently (that was the earlier bug:
+    the UI stayed on "Starting the assistant..." forever with no feedback
+    if llama-server failed to launch for any reason)."""
+
+
+class LlamaServerManager:
+    """Starts/stops the llama-server subprocess on demand -- not resident
+    from boot, so idle RAM stays free on constrained hardware."""
+
+    def __init__(self):
+        self.process = None
+
+    def start(self):
+        if self.process is not None:
+            return
+        if not os.path.exists(LLAMA_SERVER_BIN):
+            raise AssistantStartupError(
+                _("llama-server is missing ({path}).").format(path=LLAMA_SERVER_BIN)
+            )
+        if not os.path.exists(MODEL_PATH):
+            raise AssistantStartupError(
+                _("The assistant model is missing ({path}).").format(path=MODEL_PATH)
+            )
+        try:
+            self.process = subprocess.Popen(
+                [
+                    LLAMA_SERVER_BIN,
+                    "-m", MODEL_PATH,
+                    "--port", str(SERVER_PORT),
+                    "--host", "127.0.0.1",
+                    "-c", "4096",
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError as exc:
+            raise AssistantStartupError(
+                _("Could not launch llama-server: {error}").format(error=exc)
+            )
+
+    def wait_ready(self, timeout=90):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self.process.poll() is not None:
+                raise AssistantStartupError(
+                    _("llama-server exited unexpectedly (code {code}).").format(
+                        code=self.process.returncode
+                    )
+                )
+            try:
+                urllib.request.urlopen(f"{SERVER_URL}/health", timeout=2)
+                return
+            except Exception:
+                time.sleep(0.5)
+        raise AssistantStartupError(_("Timed out waiting for the assistant to start."))
+
+    def stop(self):
+        if self.process is None:
+            return
+        self.process.terminate()
+        try:
+            self.process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+        self.process = None
+
+
+SYSTEM_PROMPT = (
+    "You are a helpful offline assistant. Keep answers concise. For any answer "
+    "longer than one or two sentences, break it into short paragraphs separated "
+    "by blank lines instead of one long block of text -- this is displayed in a "
+    "narrow chat window, so readability matters more than a single flowing "
+    "paragraph.\n\n"
+    "Whenever you need to check something you can check (disk space, Wi-Fi, "
+    "internet, printers, open windows, active window, the time, battery), "
+    "call the matching tool in that same turn. Never say \"let me check\" or "
+    "\"I will check\" as a sentence on its own without actually calling the "
+    "tool right then -- that leaves the user with no answer at all. Call the "
+    "tool, then answer using its real result.\n\n"
+    "You can ONLY do what the available tools let you do: check disk space, "
+    "check Wi-Fi status, check internet connectivity, check printer status, "
+    "list open windows, check which window is active, check the current "
+    "date/time, check battery status, open the Wi-Fi settings app, open the "
+    "printer settings app, read a text file in the user's home directory, "
+    "and create or overwrite a text file in the user's home directory. You "
+    "cannot close windows, run arbitrary commands, install or remove "
+    "anything, delete files, access files outside the home directory, or "
+    "change settings directly. If asked to do something outside this list, "
+    "say clearly and immediately that you can't do that and suggest what "
+    "the user could do manually -- never ask clarifying questions as if you "
+    "might be able to do it, and never claim "
+    "to have done something you have no tool for."
+)
+
+# --- Desktop tools --------------------------------------------------------
+#
+# Two categories, and this split matters:
+#
+# - Read-only tools run automatically with no approval prompt. They only
+#   ever report state, never change anything, so the "broad standing
+#   visibility" the assistant has is scoped to *reading*, not *doing*.
+# - Gated tools change something (even just opening an app) and always show
+#   an approval dialog first, every time -- never a one-time "always allow".
+#   This is the "No unrestricted system access" principle from ROADMAP.md's
+#   Phase 5 design principles; broader visibility doesn't relax it.
+#
+# Every command below is a fixed argument list with no user input ever
+# interpolated into it -- there is no shell-injection surface here, and
+# there never should be as this list grows.
+
+
+def tool_get_disk_usage():
+    home = os.path.expanduser("~")
+    total, used, free = shutil.disk_usage(home)
+    gb = 1024**3
+    return (
+        f"Disk usage for {home}: {used / gb:.1f}GB used, "
+        f"{free / gb:.1f}GB free, {total / gb:.1f}GB total."
+    )
+
+
+def tool_get_wifi_status():
+    try:
+        result = subprocess.run(
+            ["nmcli", "-t", "-f", "ACTIVE,SSID,SIGNAL", "dev", "wifi"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        for line in result.stdout.splitlines():
+            if line.startswith("yes:"):
+                _active, ssid, signal = line.split(":", 2)
+                return f"Connected to Wi-Fi network '{ssid}', signal strength {signal}%."
+        return "Not currently connected to any Wi-Fi network."
+    except Exception as exc:
+        return f"Could not check Wi-Fi status: {exc}"
+
+
+def tool_get_printer_status():
+    try:
+        result = subprocess.run(
+            ["lpstat", "-p"], capture_output=True, text=True, timeout=10
+        )
+        return result.stdout.strip() or "No printers are currently configured."
+    except Exception as exc:
+        return f"Could not check printer status: {exc}"
+
+
+def tool_check_internet_connectivity():
+    # Raw TCP connect to a well-known DNS server -- no HTTP request, no data
+    # sent anywhere, just "can we reach the internet at all". Deliberately
+    # not a fetch to any URL, so there's nothing here that could leak
+    # anything or depend on a particular site being up.
+    try:
+        with socket.create_connection(("8.8.8.8", 53), timeout=3):
+            return "Yes, this computer currently has internet connectivity."
+    except OSError:
+        return "No, this computer does not currently have internet connectivity."
+
+
+def tool_get_current_datetime():
+    now = datetime.datetime.now()
+    return f"Current date and time: {now.strftime('%A, %d %B %Y, %H:%M:%S')}."
+
+
+def tool_get_battery_status():
+    battery_dirs = glob.glob("/sys/class/power_supply/BAT*")
+    if not battery_dirs:
+        return "No battery detected -- this looks like a desktop machine or the battery isn't reported."
+    try:
+        battery = battery_dirs[0]
+        with open(os.path.join(battery, "capacity")) as f:
+            capacity = f.read().strip()
+        with open(os.path.join(battery, "status")) as f:
+            status = f.read().strip()
+        return f"Battery: {capacity}% ({status})."
+    except Exception as exc:
+        return f"Could not read battery status: {exc}"
+
+
+def tool_get_active_window():
+    # Same main-thread requirement as tool_list_open_windows below.
+    result = {}
+    done = threading.Event()
+
+    def do_it():
+        try:
+            screen = Wnck.Screen.get_default()
+            active = screen.get_active_window()
+            result["name"] = active.get_name() if active else None
+        except Exception as exc:
+            result["error"] = str(exc)
+        done.set()
+        return False
+
+    GLib.idle_add(do_it)
+    done.wait(timeout=10)
+
+    if "error" in result:
+        return f"Could not check the active window: {result['error']}"
+    name = result.get("name")
+    return f"The currently active window is: {name}" if name else "No window is currently active/focused."
+
+
+def tool_list_open_windows():
+    # Wnck (like all GDK/GTK APIs) must only be touched from the GTK main
+    # thread. Tool execution happens on the background worker thread (see
+    # query_assistant), so calling Wnck directly here silently returns wrong
+    # results (empty list) rather than crashing -- confirmed the hard way in
+    # real testing, not theoretical. Marshal the actual call onto the main
+    # loop via GLib.idle_add and block this thread until it's done, same
+    # pattern as the approval dialog.
+    result = {}
+    done = threading.Event()
+
+    def do_it():
+        try:
+            # No force_update() here -- confirmed the hard way that calling
+            # it from inside a GLib.idle_add callback trips Wnck's own
+            # reentrancy guard (it appears to pump the main loop internally,
+            # and we're already inside a main-loop callback). The screen
+            # object is kept current via ordinary passive event processing
+            # once the main loop has been running for a bit, which is
+            # already true by the time a user is actively chatting.
+            screen = Wnck.Screen.get_default()
+            result["names"] = [w.get_name() for w in screen.get_windows() if w.get_name()]
+        except Exception as exc:
+            result["error"] = str(exc)
+        done.set()
+        return False
+
+    GLib.idle_add(do_it)
+    done.wait(timeout=10)
+
+    if "error" in result:
+        return f"Could not list open windows: {result['error']}"
+    names = result.get("names", [])
+    return "Open windows: " + ", ".join(names) if names else "No open windows detected."
+
+
+def tool_open_wifi_settings():
+    subprocess.Popen(["nm-connection-editor"])
+    return "Opened the Wi-Fi/network connection settings."
+
+
+def tool_open_printer_settings():
+    subprocess.Popen(["system-config-printer"])
+    return "Opened the printer settings."
+
+
+HOME_DIR = os.path.realpath(os.path.expanduser("~"))
+MAX_READ_FILE_BYTES = 100_000
+
+
+def _resolve_home_path(path):
+    """Refuse anything outside the home directory -- defense in depth on
+    top of normal file permissions, since the point of gating isn't just
+    "can the OS technically allow this" but "should the assistant be
+    reading/writing it at all"."""
+    resolved = os.path.realpath(os.path.join(HOME_DIR, os.path.expanduser(path)))
+    if resolved != HOME_DIR and not resolved.startswith(HOME_DIR + os.sep):
+        raise ValueError(f"Refusing to access paths outside the home directory: {path}")
+    return resolved
+
+
+def tool_read_file(path):
+    try:
+        resolved = _resolve_home_path(path)
+        if not os.path.isfile(resolved):
+            return f"No such file: {path}"
+        size = os.path.getsize(resolved)
+        if size > MAX_READ_FILE_BYTES:
+            return f"File is too large to read ({size} bytes, limit {MAX_READ_FILE_BYTES}): {path}"
+        with open(resolved, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read()
+        return f"Contents of {path}:\n\n{content}"
+    except ValueError as exc:
+        return str(exc)
+    except Exception as exc:
+        return f"Could not read {path}: {exc}"
+
+
+def tool_write_file(path, content):
+    try:
+        resolved = _resolve_home_path(path)
+        os.makedirs(os.path.dirname(resolved), exist_ok=True)
+        with open(resolved, "w", encoding="utf-8") as f:
+            f.write(content)
+        return f"Wrote {len(content)} characters to {path}."
+    except ValueError as exc:
+        return str(exc)
+    except Exception as exc:
+        return f"Could not write {path}: {exc}"
+
+
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_disk_usage",
+            "description": "Get current disk space usage (used/free/total) for the user's home directory.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_wifi_status",
+            "description": "Check whether the computer is currently connected to a Wi-Fi network, and its signal strength.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_printer_status",
+            "description": "List configured printers and whether they are ready, idle, or have an error.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_open_windows",
+            "description": "List the names of currently open application windows on the desktop.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "check_internet_connectivity",
+            "description": "Check whether this computer currently has a working internet connection.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_current_datetime",
+            "description": "Get the current date and time on this computer.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_battery_status",
+            "description": "Get the current battery charge percentage and charging status, if this machine has a battery.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_active_window",
+            "description": "Get the name of the application window the user is currently focused on/actively using.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "open_wifi_settings",
+            "description": (
+                "Open the Wi-Fi/network connection settings application so the "
+                "user can connect to a network. This opens an application on "
+                "the user's desktop and requires their approval."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "open_printer_settings",
+            "description": (
+                "Open the printer settings application so the user can add or "
+                "configure a printer. This opens an application on the user's "
+                "desktop and requires their approval."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "description": (
+                "Read the contents of a text file in the user's home directory. "
+                "Requires user approval since it exposes file contents to the "
+                "assistant."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to the file, relative to or within the home directory.",
+                    }
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "write_file",
+            "description": (
+                "Create a new file, or overwrite an existing one, with the "
+                "given text content, inside the user's home directory. "
+                "Requires user approval since it can overwrite existing data."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to the file, relative to or within the home directory.",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "The full text content to write to the file.",
+                    },
+                },
+                "required": ["path", "content"],
+            },
+        },
+    },
+]
+
+READ_ONLY_TOOLS = {
+    "get_disk_usage": tool_get_disk_usage,
+    "get_wifi_status": tool_get_wifi_status,
+    "get_printer_status": tool_get_printer_status,
+    "list_open_windows": tool_list_open_windows,
+    "check_internet_connectivity": tool_check_internet_connectivity,
+    "get_current_datetime": tool_get_current_datetime,
+    "get_battery_status": tool_get_battery_status,
+    "get_active_window": tool_get_active_window,
+}
+
+GATED_TOOLS = {
+    "open_wifi_settings": tool_open_wifi_settings,
+    "open_printer_settings": tool_open_printer_settings,
+    "read_file": tool_read_file,
+    "write_file": tool_write_file,
+}
+
+
+def _describe_gated_call(name, arguments):
+    """Human-readable, argument-specific approval text -- a generic
+    "write_file" label would hide exactly what's about to be overwritten,
+    which defeats the point of asking."""
+    if name == "read_file":
+        return _("read the file '{path}'").format(path=arguments.get("path", "?"))
+    if name == "write_file":
+        path = arguments.get("path", "?")
+        content = arguments.get("content", "")
+        preview = content[:120] + ("…" if len(content) > 120 else "")
+        exists = False
+        try:
+            exists = os.path.isfile(_resolve_home_path(path))
+        except ValueError:
+            pass
+        verb = _("overwrite the existing file") if exists else _("create the file")
+        return _("{verb} '{path}' with:\n\n{preview}").format(verb=verb, path=path, preview=preview)
+    return GATED_TOOL_DESCRIPTIONS.get(name, name)
+
+
+GATED_TOOL_DESCRIPTIONS = {
+    "open_wifi_settings": _("open the Wi-Fi/network settings"),
+    "open_printer_settings": _("open the printer settings"),
+}
+
+
+def query_assistant(user_text, history, request_approval):
+    # /no_think keeps interactive replies fast -- reasoning mode is useful
+    # for the translation post-editing prototype but too slow for chat.
+    messages = (
+        [{"role": "system", "content": SYSTEM_PROMPT}]
+        + history
+        + [{"role": "user", "content": user_text + "\n\n/no_think"}]
+    )
+
+    for _round in range(3):  # cap rounds so a confused model can't loop forever
+        payload = {"messages": messages, "tools": TOOLS, "temperature": 0.3, "max_tokens": 500}
+        req = urllib.request.Request(
+            f"{SERVER_URL}/v1/chat/completions",
+            data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            data = json.loads(resp.read())
+        message = data["choices"][0]["message"]
+        tool_calls = message.get("tool_calls")
+        if not tool_calls:
+            return (message.get("content") or "").strip()
+
+        messages.append(message)
+        for call in tool_calls:
+            name = call["function"]["name"]
+            call_id = call.get("id", "")
+            try:
+                arguments = json.loads(call["function"].get("arguments") or "{}")
+            except json.JSONDecodeError:
+                arguments = {}
+
+            if name in READ_ONLY_TOOLS:
+                try:
+                    result = READ_ONLY_TOOLS[name](**arguments)
+                except TypeError as exc:
+                    result = f"Bad arguments for {name}: {exc}"
+            elif name in GATED_TOOLS:
+                description = _describe_gated_call(name, arguments)
+                if request_approval(description):
+                    try:
+                        result = GATED_TOOLS[name](**arguments)
+                    except TypeError as exc:
+                        result = f"Bad arguments for {name}: {exc}"
+                else:
+                    result = "The user did not approve this action."
+            else:
+                result = f"Unknown tool: {name}"
+            messages.append({"role": "tool", "tool_call_id": call_id, "content": result})
+
+    return _("Sorry, I couldn't finish that after checking a few things.")
+
+
+def _wrap_message_text(text, width=52):
+    """Pre-wrap text with literal newlines at a fixed character width.
+
+    Preserves intentional paragraph breaks (blank lines) from the model's
+    own formatting -- only wraps within each paragraph, not across them.
+    """
+    paragraphs = text.split("\n\n")
+    wrapped = [
+        textwrap.fill(p, width=width) if p.strip() else p for p in paragraphs
+    ]
+    return "\n\n".join(wrapped)
+
+
+class AssistantWindow(Gtk.Window):
+    def __init__(self):
+        super().__init__(title=_("Pacific AI Assistant"))
+        self.set_default_size(560, 640)
+        self.set_position(Gtk.WindowPosition.CENTER)
+        # No max-size geometry hint here (removed) -- it was a workaround
+        # for window growth that turned out to be caused by a real bug
+        # (see _on_reply/_wrap_message_text), not something that needed a
+        # hard size cap. Keeping the hint after the real fix landed only
+        # broke maximize/restore for no remaining benefit.
+
+        self.server = LlamaServerManager()
+        self.history = []
+        self.connect("destroy", self.on_destroy)
+
+        # Touch the Wnck screen singleton now, on the main thread, at
+        # startup -- it populates its window list from passive X11 event
+        # processing over time, not instantly. Without this warmup, the
+        # very first list_open_windows tool call (which can happen soon
+        # after the window opens) can race ahead of that and see an empty
+        # list. Confirmed this race in real testing, not theoretical.
+        Wnck.Screen.get_default()
+
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        self.add(outer)
+
+        outer.pack_start(self._build_header(), False, False, 0)
+        outer.pack_start(self._build_chat_area(), True, True, 0)
+        outer.pack_start(self._build_input_area(), False, False, 0)
+
+        self._start_server_async()
+
+    def _build_header(self):
+        outer = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=14)
+        outer.get_style_context().add_class("header-bar")
+        outer.set_border_width(16)
+
+        if os.path.exists(LOGO_PATH):
+            pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(LOGO_PATH, 40, 40, True)
+            outer.pack_start(Gtk.Image.new_from_pixbuf(pixbuf), False, False, 0)
+
+        text_col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+
+        title = Gtk.Label(label=_("Pacific AI Assistant"), xalign=0)
+        title.get_style_context().add_class("title")
+        text_col.pack_start(title, False, False, 0)
+
+        disclaimer = Gtk.Label(
+            label=_(
+                "Offline, best-effort. Answers and translations may be "
+                "inaccurate -- use Disaster Readiness / Services Directory "
+                "for official information."
+            ),
+            xalign=0,
+            wrap=True,
+        )
+        disclaimer.get_style_context().add_class("disclaimer")
+        text_col.pack_start(disclaimer, False, False, 0)
+
+        outer.pack_start(text_col, True, True, 0)
+
+        return outer
+
+    def _build_chat_area(self):
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+
+        self.chat_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        self.chat_box.set_border_width(18)
+        scroller.add(self.chat_box)
+        self.scroller = scroller
+
+        self.status_label = Gtk.Label(label=_("Starting the assistant…"), xalign=0.5)
+        self.status_label.get_style_context().add_class("status")
+        self.chat_box.pack_start(self.status_label, False, False, 0)
+
+        return scroller
+
+    def _build_input_area(self):
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        row.set_border_width(14)
+
+        self.entry = Gtk.Entry()
+        self.entry.set_placeholder_text(_("Ask something…"))
+        self.entry.set_sensitive(False)
+        self.entry.connect("activate", self.on_send)
+        row.pack_start(self.entry, True, True, 0)
+
+        self.send_button = Gtk.Button(label=_("Send"))
+        self.send_button.get_style_context().add_class("send-button")
+        self.send_button.set_sensitive(False)
+        self.send_button.connect("clicked", self.on_send)
+        row.pack_start(self.send_button, False, False, 0)
+
+        return row
+
+    def _start_server_async(self):
+        def worker():
+            try:
+                self.server.start()
+                self.server.wait_ready()
+            except AssistantStartupError as exc:
+                GLib.idle_add(self._on_server_ready, str(exc))
+                return
+            except Exception as exc:  # noqa: BLE001 -- must never fail silently here
+                GLib.idle_add(self._on_server_ready, str(exc))
+                return
+            GLib.idle_add(self._on_server_ready, None)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_server_ready(self, error):
+        if error is None:
+            self.status_label.set_text(_("Ready. Ask a question below."))
+            self.entry.set_sensitive(True)
+            self.send_button.set_sensitive(True)
+            self.entry.grab_focus()
+        else:
+            self.status_label.set_text(_("Could not start the assistant: {error}").format(error=error))
+        return False
+
+    def _add_message(self, text, is_user, is_thinking=False):
+        column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+        column.set_halign(Gtk.Align.END if is_user else Gtk.Align.START)
+
+        # .upper() here since GTK's CSS engine doesn't support text-transform
+        # (that's a web-CSS-only property) -- the uppercase styling has to
+        # happen in Python instead.
+        role_text = (_("You") if is_user else _("Assistant")).upper()
+        role = Gtk.Label(label=role_text, xalign=1 if is_user else 0)
+        role.get_style_context().add_class("role-label")
+        role.get_style_context().add_class("role-user" if is_user else "role-assistant")
+        column.pack_start(role, False, False, 0)
+
+        # GtkLabel's own wrap/max-width-chars/size-request mechanisms were
+        # each tried and each failed to reliably stop the window from
+        # growing to fit long replies (confirmed against the real live
+        # session, not just local guessing). Sidestepping the problem
+        # entirely: pre-wrap the text ourselves with literal newlines before
+        # it ever reaches the label, so there is no negotiation for GTK to
+        # get wrong -- the label just displays lines that are already short.
+        label = Gtk.Label(label=_wrap_message_text(text), xalign=0, wrap=True)
+        label.set_selectable(True)
+        label.set_line_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        if is_thinking:
+            label.get_style_context().add_class("message-thinking")
+        else:
+            label.get_style_context().add_class("message-user" if is_user else "message-assistant")
+        column.pack_start(label, False, False, 0)
+
+        self.chat_box.pack_start(column, False, False, 0)
+        column.show_all()
+        return label
+
+    def _scroll_to_bottom(self):
+        adj = self.scroller.get_vadjustment()
+        adj.set_value(adj.get_upper())
+        return False
+
+    def on_send(self, *_args):
+        text = self.entry.get_text().strip()
+        if not text:
+            return
+        self.entry.set_text("")
+        self.entry.set_sensitive(False)
+        self.send_button.set_sensitive(False)
+        self._add_message(text, is_user=True)
+        thinking_label = self._add_message(_("Thinking…"), is_user=False, is_thinking=True)
+        GLib.idle_add(self._scroll_to_bottom)
+
+        def worker():
+            try:
+                reply = query_assistant(text, self.history, self._request_approval)
+            except Exception as exc:
+                reply = _("Sorry, something went wrong: {error}").format(error=exc)
+            GLib.idle_add(self._on_reply, text, reply, thinking_label)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _request_approval(self, action_description):
+        """Called from the background worker thread. Blocks that thread
+        (never the GTK main loop) until the user answers a real dialog --
+        every gated action asks every time, no "always allow"."""
+        result = {}
+        done = threading.Event()
+
+        def show_dialog():
+            dialog = Gtk.MessageDialog(
+                transient_for=self,
+                modal=True,
+                message_type=Gtk.MessageType.QUESTION,
+                buttons=Gtk.ButtonsType.YES_NO,
+                text=_("Allow this action?"),
+            )
+            dialog.format_secondary_text(
+                _("The assistant wants to {action}.").format(action=action_description)
+            )
+            response = dialog.run()
+            dialog.destroy()
+            result["allowed"] = response == Gtk.ResponseType.YES
+            done.set()
+            return False
+
+        GLib.idle_add(show_dialog)
+        done.wait(timeout=120)
+        return result.get("allowed", False)
+
+    def _on_reply(self, user_text, reply, thinking_label):
+        thinking_label.set_text(_wrap_message_text(reply))
+        style = thinking_label.get_style_context()
+        style.remove_class("message-thinking")
+        style.add_class("message-assistant")
+        self.history.append({"role": "user", "content": user_text})
+        self.history.append({"role": "assistant", "content": reply})
+        self.entry.set_sensitive(True)
+        self.send_button.set_sensitive(True)
+        self.entry.grab_focus()
+        GLib.idle_add(self._scroll_to_bottom)
+        return False
+
+    def on_destroy(self, *_args):
+        self.server.stop()
+        Gtk.main_quit()
+
+
+def main():
+    provider = Gtk.CssProvider()
+    provider.load_from_data(CSS)
+    Gtk.StyleContext.add_provider_for_screen(
+        Gdk.Screen.get_default(),
+        provider,
+        Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+    )
+
+    win = AssistantWindow()
+    win.show_all()
+    Gtk.main()
+
+
+if __name__ == "__main__":
+    main()

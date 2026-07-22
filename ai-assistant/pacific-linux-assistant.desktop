@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Pacific AI Assistant
+GenericName=Offline AI chat assistant
+Comment=Offline, best-effort AI assistant -- not a source for official disaster or service information
+Exec=/usr/local/bin/pacific-linux-assistant
+Icon=pacific-linux
+Terminal=false
+Categories=Utility;
+Keywords=ai;assistant;chat;translate;translation;bislama;

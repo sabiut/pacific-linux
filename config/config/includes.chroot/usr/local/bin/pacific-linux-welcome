@@ -25,7 +25,48 @@ LOGO_PATH = "/usr/share/pixmaps/pacific-linux.png"
 # Picks up the running desktop session's LANGUAGE/LC_ALL/LANG automatically.
 gettext.bindtextdomain("pacific-linux", "/usr/share/locale")
 gettext.textdomain("pacific-linux")
-_ = gettext.gettext
+
+CURRENT_LANG = (os.environ.get("LANGUAGE", "").split(":")[0]) or "en"
+
+
+def _set_translation(lang_code):
+    """Rebind the module-level `_` so newly-built widgets render in lang_code.
+
+    Bislama has no glibc locale (no bi_VU), so this can't rely on LC_ALL --
+    gettext.translation() works directly off the catalog files regardless.
+    """
+    global _, CURRENT_LANG
+    CURRENT_LANG = lang_code
+    if lang_code == "en":
+        _ = gettext.NullTranslations().gettext
+        return
+    try:
+        _ = gettext.translation(
+            "pacific-linux", localedir="/usr/share/locale", languages=[lang_code]
+        ).gettext
+    except FileNotFoundError:
+        _ = gettext.NullTranslations().gettext
+
+
+def _persist_language(lang_code):
+    """Make the choice stick after the welcome window closes.
+
+    ~/.config/environment.d/ is read by pam_systemd at login (confirmed wired
+    into lightdm's PAM stack via common-session) -- this is what applies the
+    language to XFCE and every other gettext-aware app, not just this window.
+    """
+    env_dir = os.path.expanduser("~/.config/environment.d")
+    os.makedirs(env_dir, exist_ok=True)
+    env_file = os.path.join(env_dir, "50-pacific-linux-language.conf")
+    if lang_code == "en":
+        if os.path.exists(env_file):
+            os.remove(env_file)
+    else:
+        with open(env_file, "w") as f:
+            f.write(f"LANGUAGE={lang_code}\n")
+
+
+_set_translation(CURRENT_LANG)
 
 CSS = b"""
 window { background-color: #16232b; }
@@ -77,12 +118,15 @@ def _highlights():
 
 
 class WelcomeWindow(Gtk.Window):
-    def __init__(self):
+    def __init__(self, on_language_change):
         super().__init__(title=_("Welcome to Pacific Linux"))
+        self.on_language_change = on_language_change
         self.set_default_size(560, 560)
         self.set_position(Gtk.WindowPosition.CENTER)
         self.set_resizable(False)
-        self.connect("destroy", self.on_dismiss)
+        # delete-event (not destroy) so on_dismiss doesn't fire when a
+        # language switch destroys this window to rebuild a fresh one.
+        self.connect("delete-event", self.on_dismiss)
 
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.add(outer)
@@ -145,16 +189,27 @@ class WelcomeWindow(Gtk.Window):
         section.pack_start(section_title, False, False, 0)
 
         english = Gtk.RadioButton.new_with_label(None, _("English"))
-        english.set_active(True)
+        english.set_active(CURRENT_LANG != "bi")
         section.pack_start(english, False, False, 0)
 
         bislama = Gtk.RadioButton.new_with_label_from_widget(
             english,
             _("Bislama"),
         )
+        bislama.set_active(CURRENT_LANG == "bi")
         section.pack_start(bislama, False, False, 0)
 
+        english.connect("toggled", self._on_language_toggled, "en")
+        bislama.connect("toggled", self._on_language_toggled, "bi")
+
         return section
+
+    def _on_language_toggled(self, button, lang_code):
+        if not button.get_active() or lang_code == CURRENT_LANG:
+            return
+        _persist_language(lang_code)
+        _set_translation(lang_code)
+        self.on_language_change()
 
     def _build_highlights_section(self):
         section = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
@@ -195,6 +250,7 @@ class WelcomeWindow(Gtk.Window):
         os.makedirs(os.path.dirname(MARKER), exist_ok=True)
         open(MARKER, "a").close()
         Gtk.main_quit()
+        return False
 
 
 def main():
@@ -209,8 +265,16 @@ def main():
         Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
     )
 
-    win = WelcomeWindow()
-    win.show_all()
+    state = {"win": None}
+
+    def show_window():
+        if state["win"] is not None:
+            state["win"].destroy()
+        win = WelcomeWindow(on_language_change=show_window)
+        state["win"] = win
+        win.show_all()
+
+    show_window()
     Gtk.main()
 
 

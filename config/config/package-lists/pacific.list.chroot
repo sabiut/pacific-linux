@@ -60,6 +60,14 @@ libnotify-bin
 python3-gi
 gir1.2-gtk-3.0
 
+# VM guest integration — spice-vdagent enables host<->guest clipboard
+# sharing and display resizing under SPICE (virt-manager); qemu-guest-agent
+# lets the host query/manage the guest (graceful shutdown, IP reporting).
+# Both are inert on real hardware: they only activate when the matching
+# virtio devices are detected, so they cost nothing outside a VM.
+spice-vdagent
+qemu-guest-agent
+
 # NOTE: VS Code / VSCodium from the roadmap is deferred — neither ships in
 # Debian's own repos, so including it means adding a third-party apt archive
 # (config/archives/) and trusting its signing key. Revisit once we decide
