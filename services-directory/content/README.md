@@ -1,8 +1,8 @@
 # services-directory/content/
 
 One JSON file per country, installed to
-`/usr/share/pacific-linux/services-directory/` and loaded at runtime by
-`pacific-linux-services-directory`. Adding a country is a content task, not
+`/usr/share/venu-pacific/services-directory/` and loaded at runtime by
+`venu-pacific-services-directory`. Adding a country is a content task, not
 an engineering one — copy an existing file, replace the content, and cite
 an official source for every entry (same standard as `disaster-info/`).
 

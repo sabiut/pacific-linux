@@ -1,12 +1,12 @@
 [Desktop Entry]
 Type=Application
 Version=1.0
-Name=Install Pacific Linux
+Name=Install Venu Pacific
 GenericName=Calamares Installer
 Exec=calamares-install-debian
-Comment=Calamares — Install Pacific Linux to disk
+Comment=Calamares — Install Venu Pacific to disk
 Keywords=calamares;system;install;pacific;linux;installer
-Icon=/usr/share/pixmaps/pacific-linux.png
+Icon=/usr/share/pixmaps/venu-pacific.png
 Terminal=false
 Categories=Qt;System;
 StartupWMClass=calamares

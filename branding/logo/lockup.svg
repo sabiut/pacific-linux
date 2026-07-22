@@ -23,6 +23,6 @@
   <circle cx="256" cy="256" r="11" fill="#b85f2c"/>
 
   </g>
-  <text x="250" y="115" font-family="Liberation Serif, Georgia, serif" font-size="64" font-weight="700" fill="#16232b" letter-spacing="-0.5">Pacific Linux</text>
+  <text x="250" y="115" font-family="Liberation Serif, Georgia, serif" font-size="64" font-weight="700" fill="#16232b" letter-spacing="-0.5">Venu Pacific</text>
   <text x="252" y="150" font-family="Liberation Mono, DejaVu Sans Mono, monospace" font-size="18" fill="#1f6f74" letter-spacing="3">A DEBIAN-BASED DESKTOP FOR THE PACIFIC</text>
 </svg>

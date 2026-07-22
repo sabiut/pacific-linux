@@ -1,9 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=Welcome to Pacific Linux
-Comment=First-run orientation (runs once)
-Exec=/usr/local/bin/pacific-linux-welcome
-Icon=pacific-linux
-OnlyShowIn=XFCE;
-NoDisplay=true
-X-GNOME-Autostart-Phase=Application

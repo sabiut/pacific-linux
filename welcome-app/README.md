@@ -1,19 +1,19 @@
 # welcome-app/
 
 First-run window, shown once per user via an XDG autostart entry (same
-marker-file pattern as `pacific-linux-set-defaults`). GTK3 via PyGObject —
+marker-file pattern as `venu-pacific-set-defaults`). GTK3 via PyGObject —
 matches XFCE's own native apps here, which are still GTK3 (`xfdesktop 4.20`
 itself reports "Built with GTK+ 3.24"), rather than adding a second GTK
 stack for one small window.
 
-- `pacific-linux-welcome` — the app itself
-- `pacific-linux-welcome.desktop` — the autostart entry
+- `venu-pacific-welcome` — the app itself
+- `venu-pacific-welcome.desktop` — the autostart entry
 
 The gettext framework is built (see `locales/`) — every user-facing string
 is wrapped in `_()` and resolved via
-`/usr/share/locale/<lang>/LC_MESSAGES/pacific-linux.mo` at runtime. English
+`/usr/share/locale/<lang>/LC_MESSAGES/venu-pacific.mo` at runtime. English
 and Bislama both have real, reviewed translations as of Phase 2 —
-`locales/bi/pacific-linux.po` was reviewed and corrected by a fluent
+`locales/bi/venu-pacific.po` was reviewed and corrected by a fluent
 speaker (not machine-translated or guessed). Both language options in the
 welcome app's language section are enabled.
 

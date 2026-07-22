@@ -1,5 +1,5 @@
 #!/bin/bash
-# CI lint checks for Pacific Linux's live-build config: shell syntax,
+# CI lint checks for Venu Pacific's live-build config: shell syntax,
 # systemd unit validity, XML validity, and executable-bit sanity on
 # everything that ships into the built image. Run locally with
 # ./scripts/lint.sh, or via .github/workflows/ci.yml.

@@ -1,0 +1,77 @@
+#!/bin/sh
+# Builds llama.cpp from source and bundles the Qwen3-4B router model directly
+# into the image (Phase 5 -- see ROADMAP.md, local-only, not committed).
+#
+# Built here rather than shipping prebuilt binaries so the result is
+# reproducible from source, same as the rest of the OS. Deliberately does
+# NOT use -march=native / GGML_NATIVE=ON -- that would optimize for *this*
+# build machine's CPU and could crash with an illegal instruction on
+# different (often older, donated) real hardware.
+#
+# Naively omitting -march=native is NOT enough on its own, though -- verified
+# the hard way: without GGML_NATIVE and without any other arch flag, ggml's
+# CMake falls through to zero SIMD flags at all (checked ggml-cpu/CMakeLists.txt
+# directly), meaning the plain baseline x86-64 codepath with no AVX/AVX2/FMA.
+# Measured real-world impact: 0.73 tok/s prompt processing / 0.47 tok/s
+# generation on real hardware, versus 23-31 / 5-7 tok/s with proper SIMD --
+# a 15-30x slowdown, not a reasonable safety margin. The actual fix is
+# GGML_CPU_ALL_VARIANTS + GGML_BACKEND_DL: this builds multiple CPU variants
+# (SSE4.2 up through AVX-512, covering hardware back to ~2011) into the same
+# output and dispatches to the best one the *running* CPU actually supports
+# at runtime -- portable AND fast, confirmed via direct benchmark before
+# adopting this (see ROADMAP.md Phase 5 for the numbers). Also confirmed the
+# dynamic backend loader resolves its .so relative to the running binary's
+# own location, not a baked-in build path, so it survives being copied
+# elsewhere the same way the patchelf'd RPATH below does.
+#
+# Model download uses the same "fetch at build time, don't commit the
+# binary" pattern as 0160-venu-pacific-kiwix-vikidia.hook.chroot.
+set -e
+
+BUILD_DIR="/tmp/llama.cpp-build"
+INSTALL_DIR="/opt/venu-pacific/llama.cpp"
+MODEL_DIR="/usr/share/venu-pacific/models"
+
+echo "=== Installing build dependencies ==="
+apt-get update -qq
+apt-get install -y -qq --no-install-recommends cmake build-essential git libssl-dev patchelf
+
+echo "=== Cloning llama.cpp (ggml-org/llama.cpp, canonical repo) ==="
+rm -rf "$BUILD_DIR"
+git clone --depth 1 https://github.com/ggml-org/llama.cpp.git "$BUILD_DIR"
+
+echo "=== Building (portable AND fast -- multi-variant CPU dispatch, see comment above) ==="
+cmake -S "$BUILD_DIR" -B "$BUILD_DIR/build" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DGGML_BACKEND_DL=ON \
+    -DGGML_CPU_ALL_VARIANTS=ON \
+    -DBUILD_SHARED_LIBS=ON
+cmake --build "$BUILD_DIR/build" -j"$(nproc)" --config Release --target llama-cli llama-server
+
+echo "=== Installing binaries + their sibling libs ==="
+mkdir -p "$INSTALL_DIR/bin"
+cp "$BUILD_DIR/build/bin/llama-cli" "$BUILD_DIR/build/bin/llama-server" "$INSTALL_DIR/bin/"
+cp "$BUILD_DIR"/build/bin/*.so* "$INSTALL_DIR/bin/" 2>/dev/null || true
+
+# llama.cpp's CMake build bakes an ABSOLUTE RPATH pointing at the build
+# directory itself (confirmed via readelf -d, not $ORIGIN) -- so simply
+# copying the binaries elsewhere and deleting the build dir (as done below)
+# breaks every one of them with "cannot open shared object file", even
+# though the .so files are right there in the same directory. Rewrite the
+# RPATH on every binary and library to a relative $ORIGIN so they resolve
+# their siblings regardless of where they end up installed.
+for f in "$INSTALL_DIR"/bin/*; do
+    patchelf --set-rpath '$ORIGIN' "$f"
+done
+
+echo "=== Downloading Qwen3-4B Q4_K_M GGUF (~2.4GB, official Qwen/Qwen3-4B-GGUF repo) ==="
+mkdir -p "$MODEL_DIR"
+wget -q \
+    "https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf" \
+    -O "$MODEL_DIR/Qwen3-4B-Q4_K_M.gguf"
+
+echo "=== Cleaning up build-only dependencies ==="
+rm -rf "$BUILD_DIR"
+apt-get purge -y -qq cmake build-essential git libssl-dev patchelf
+apt-get autoremove -y -qq
+apt-get install -y -qq --no-install-recommends libssl3 libgomp1 zlib1g libzstd1

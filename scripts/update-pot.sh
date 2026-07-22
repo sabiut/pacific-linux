@@ -10,9 +10,9 @@ cd "$(dirname "$0")/.."
 # domain:source-file pairs — add a line here when a new gettext domain
 # (a new app with its own catalog) is introduced.
 DOMAINS=(
-    "pacific-linux:welcome-app/pacific-linux-welcome"
-    "pacific-linux-disaster:disaster-info/pacific-linux-disaster-info"
-    "pacific-linux-services:services-directory/pacific-linux-services-directory"
+    "venu-pacific:welcome-app/venu-pacific-welcome"
+    "venu-pacific-disaster:disaster-info/venu-pacific-disaster-info"
+    "venu-pacific-services:services-directory/venu-pacific-services-directory"
 )
 
 for entry in "${DOMAINS[@]}"; do
@@ -23,8 +23,8 @@ for entry in "${DOMAINS[@]}"; do
         --language=Python \
         --keyword=_ \
         --from-code=UTF-8 \
-        --package-name=pacific-linux \
-        --msgid-bugs-address=https://github.com/sabiut/pacific-linux/issues \
+        --package-name=venu-pacific \
+        --msgid-bugs-address=https://github.com/sabiut/venu-pacific/issues \
         --output="locales/$domain.pot" \
         "$source_file"
 

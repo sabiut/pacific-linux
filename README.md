@@ -1,4 +1,4 @@
-# Pacific Linux
+# Venu Pacific
 
 A Debian-based desktop Linux distribution built for the Pacific Islands
 region. Designed around the region's real conditions: expensive/unreliable
@@ -36,5 +36,5 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-Pacific Linux's own code is licensed under [GPL-3.0](LICENSE). The
+Venu Pacific's own code is licensed under [GPL-3.0](LICENSE). The
 underlying OS remains Debian and carries its own package licenses.

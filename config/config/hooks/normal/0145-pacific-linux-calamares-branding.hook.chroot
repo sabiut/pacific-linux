@@ -1,8 +1,0 @@
-#!/bin/sh
-# calamares-settings-debian ships /etc/calamares/settings.conf pointing at its
-# own "debian" branding component. Our own component is installed alongside
-# it (via includes.chroot, /etc/calamares/branding/pacific-linux/) -- this
-# just switches which one settings.conf selects.
-set -e
-
-sed -i 's/^branding: debian$/branding: pacific-linux/' /etc/calamares/settings.conf

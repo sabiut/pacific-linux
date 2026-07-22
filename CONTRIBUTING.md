@@ -1,4 +1,4 @@
-# Contributing to Pacific Linux
+# Contributing to Venu Pacific
 
 Thanks for helping build this. A few ground rules that follow directly from
 the project's phased roadmap:
@@ -22,13 +22,13 @@ place to do it — please don't ask for special-casing in the core build.
 
 ## Translations
 
-`locales/pacific-linux.pot` is the template, extracted from the welcome
-app's source strings. `locales/bi/pacific-linux.po` (Bislama) is done and
+`locales/venu-pacific.pot` is the template, extracted from the welcome
+app's source strings. `locales/bi/venu-pacific.po` (Bislama) is done and
 reviewed by a fluent speaker — v1 ships English and Bislama both. To add
 another language:
 
 1. If your language doesn't have a catalog yet, run
-   `msginit --input=locales/pacific-linux.pot --locale=<lang-code> --output=locales/<lang-code>/pacific-linux.po`
+   `msginit --input=locales/venu-pacific.pot --locale=<lang-code> --output=locales/<lang-code>/venu-pacific.po`
 2. Fill in the `msgstr` lines (a `.po` file is plain text — any text editor
    or a tool like [Poedit](https://poedit.net/) works)
 3. Open a PR — a native or fluent speaker review is required before merge.
