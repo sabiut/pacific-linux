@@ -1,6 +1,6 @@
 # branding/
 
-Visual identity for Pacific Linux — a wayfinding star compass crossed with
+Visual identity for Venu Pacific — a wayfinding star compass crossed with
 wave-swell lines (echoing Marshallese stick charts), in a deep-ocean palette.
 Chosen deliberately over the palm-tree/sunset cliché.
 
@@ -11,7 +11,7 @@ Chosen deliberately over the palm-tree/sunset cliché.
   full desktop background: scattered wayfinding stars, the mark glowing
   bottom-right, a faint horizon swell line. Calm in the top-left where XFCE
   places desktop icons.
-- `plymouth/pacific-linux/` — a Plymouth `script`-plugin boot theme: the
+- `plymouth/venu-pacific/` — a Plymouth `script`-plugin boot theme: the
   wallpaper as background, the mark centered, and a simple progress bar.
   Written against patterns verified in Debian's own bundled theme
   (`/usr/share/plymouth/themes/spacefun`) rather than from memory, since a
@@ -26,22 +26,22 @@ for the old hardware this project targets.
 
 ## Wired into the build
 
-- `config/config/includes.chroot/usr/share/backgrounds/pacific-linux/` —
+- `config/config/includes.chroot/usr/share/backgrounds/venu-pacific/` —
   wallpaper
-- `config/config/includes.chroot/usr/share/plymouth/themes/pacific-linux/` —
+- `config/config/includes.chroot/usr/share/plymouth/themes/venu-pacific/` —
   boot theme
-- `config/config/includes.chroot/usr/share/pixmaps/pacific-linux.png` — app
+- `config/config/includes.chroot/usr/share/pixmaps/venu-pacific.png` — app
   icon / about-dialog badge
-- `config/config/hooks/normal/0100-pacific-linux-plymouth.hook.chroot` —
+- `config/config/hooks/normal/0100-venu-pacific-plymouth.hook.chroot` —
   activates the Plymouth theme and rebuilds the initramfs at build time
-- `config/config/includes.chroot/etc/xdg/autostart/pacific-linux-set-defaults.desktop`
-  + `.../usr/local/bin/pacific-linux-set-defaults` — sets the default
+- `config/config/includes.chroot/etc/xdg/autostart/venu-pacific-set-defaults.desktop`
+  + `.../usr/local/bin/venu-pacific-set-defaults` — sets the default
   wallpaper on first XFCE login (belt-and-suspenders; see below for the
   actual fix).
 - `config/config/includes.chroot/etc/skel/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml`
   — pre-seeds the backdrop xfconf properties before xfdesktop ever
   constructs itself for a fresh user.
-- `config/config/hooks/normal/0120-pacific-linux-xfdesktop-fix.hook.chroot`
+- `config/config/hooks/normal/0120-venu-pacific-xfdesktop-fix.hook.chroot`
   — the actual fix (see below).
 
 ## The xfdesktop wallpaper bug (resolved)
@@ -57,7 +57,7 @@ were all confirmed correct via direct `xfconf-query`, yet the image was
 loads show up fine in the same trace). Reproduced identically on real
 hardware (Blackview mini PC), ruling out a QEMU-only artifact.
 
-**Fix**: `0120-pacific-linux-xfdesktop-fix.hook.chroot` downloads
+**Fix**: `0120-venu-pacific-xfdesktop-fix.hook.chroot` downloads
 `xfdesktop4` and `xfdesktop4-data` 4.20.2-2 directly from the Debian pool
 (sid) by URL and installs them with `apt-get install ./*.deb` after the
 main package set is in — 4.20.2 doesn't have the bug. Every other library

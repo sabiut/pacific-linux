@@ -1,7 +1,7 @@
 # disaster-info/content/
 
-One JSON file per country, installed to `/usr/share/pacific-linux/disaster-info/`
-and loaded at runtime by `pacific-linux-disaster-info`. Adding a country is a
+One JSON file per country, installed to `/usr/share/venu-pacific/disaster-info/`
+and loaded at runtime by `venu-pacific-disaster-info`. Adding a country is a
 content task, not an engineering one — copy an existing file, replace the
 content, and make sure every fact is cited against an official source (see
 below). This content can genuinely put someone in danger if it's wrong, so

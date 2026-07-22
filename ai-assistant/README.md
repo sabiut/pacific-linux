@@ -6,13 +6,13 @@ matches XFCE's own native GTK3 apps and stays consistent with the rest of the
 codebase (not GTK4, despite an earlier research proposal suggesting it —
 this repo's own established pattern wins).
 
-- `pacific-linux-assistant` — the app itself. Spawns `llama-server` (from
-  `/opt/pacific-linux/llama.cpp/bin/`, built by
-  `config/config/hooks/normal/0170-pacific-linux-ai-assistant.hook.chroot`)
+- `venu-pacific-assistant` — the app itself. Spawns `llama-server` (from
+  `/opt/venu-pacific/llama.cpp/bin/`, built by
+  `config/config/hooks/normal/0170-venu-pacific-ai-assistant.hook.chroot`)
   on demand when the window opens, and stops it when the window closes — no
   idle RAM cost when the assistant isn't actually in use, which matters on
   the low-spec/donated hardware this project targets.
-- `pacific-linux-assistant.desktop` — applications-menu entry.
+- `venu-pacific-assistant.desktop` — applications-menu entry.
 
 ## What this MVP is, and isn't
 

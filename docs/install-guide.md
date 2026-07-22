@@ -1,4 +1,4 @@
-# Installing Pacific Linux
+# Installing Venu Pacific
 
 ## What you need
 
@@ -6,7 +6,7 @@
 - A computer to write the ISO with (any OS works — the write step below uses `dd`, but a GUI
   tool like [Balena Etcher](https://www.balena.io/etcher/) or Rufus works just as well if you'd
   rather not use a terminal)
-- The target machine you're installing Pacific Linux on
+- The target machine you're installing Venu Pacific on
 
 ## 1. Get the ISO
 
@@ -20,7 +20,7 @@ lb config \
   --archive-areas "main contrib non-free non-free-firmware" \
   --binary-images iso-hybrid \
   --debian-installer none \
-  --iso-volume "Pacific Linux"
+  --iso-volume "Venu Pacific"
 sudo lb build
 ```
 
@@ -109,9 +109,9 @@ applications menu (this is Calamares' own menu entry). It runs
 > anything unexpected, please open an issue with what step failed and what hardware you're on.
 >
 > **Known cosmetic gap**: Calamares currently shows Debian's own branding (its logo, "Install
-> Debian" wording on the desktop shortcut, generic slideshow) instead of Pacific Linux's. The
+> Debian" wording on the desktop shortcut, generic slideshow) instead of Venu Pacific's. The
 > package that gives Calamares its working configuration (`calamares-settings-debian`) ships
-> that branding by default, and a Pacific Linux–specific override hasn't been built yet. It
+> that branding by default, and a Venu Pacific–specific override hasn't been built yet. It
 > doesn't affect what the installer actually does (partitioning, user creation, installing).
 
 ## After installing

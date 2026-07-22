@@ -1,0 +1,2123 @@
+#!/usr/bin/env python3
+"""Pacific AI Assistant -- offline chat assistant (Phase 5 MVP).
+
+Router model: Qwen3-4B via llama.cpp's llama-server, spawned on demand when
+this window opens and stopped when it closes -- RAM is only used while the
+assistant is actually open, matching the project's low-power design
+constraint for old/donated hardware (see ROADMAP.md Phase 5).
+
+Translation is handled by directly prompting this same model rather than a
+dedicated translation pipeline -- see ROADMAP.md's Phase 5 "Decision: no
+dedicated translation model" section for why, and why every response here
+carries a visible disclaimer rather than being treated as authoritative.
+Disaster/safety information stays in the human-reviewed Disaster Readiness
+and Services Directory apps; this assistant does not replace them.
+
+This first version is a working chat MVP: on-demand model + UI. The offline
+knowledge-base/RAG wiring and desktop-action allow-list are later staged
+steps (see ROADMAP.md's Build staging list), not part of this pass.
+"""
+
+import datetime
+import fnmatch
+import gettext
+import glob
+import json
+import math
+import os
+import shutil
+import socket
+import subprocess
+import textwrap
+import threading
+import time
+import urllib.parse
+import urllib.request
+import uuid
+
+import gi
+
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+gi.require_version("Gio", "2.0")
+gi.require_version("Wnck", "3.0")
+from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk, Pango, Wnck  # noqa: E402
+
+LLAMA_SERVER_BIN = "/opt/venu-pacific/llama.cpp/bin/llama-server"
+MODEL_PATH = "/usr/share/venu-pacific/models/Qwen3-4B-Q4_K_M.gguf"
+LOGO_PATH = "/usr/share/pixmaps/venu-pacific.png"
+SERVER_PORT = 8149
+SERVER_URL = f"http://127.0.0.1:{SERVER_PORT}"
+# The model is a ~2.4GB file, and the very first read of it after a fresh
+# boot can be far slower than later ones -- either because it's genuinely
+# cold on slow/donated hardware, or (when running from a live ISO) because
+# it's being decompressed out of a read-only squashfs for the first time,
+# with the OS page cache only paying off from the second load onward. 90s
+# was too tight a margin for that first load in practice (confirmed: a
+# timed-out launch reliably succeeds immediately on retry, with no other
+# change in between) -- widened to give real hardware room without hanging
+# forever if llama-server is actually broken.
+STARTUP_TIMEOUT_SECONDS = 240
+
+gettext.bindtextdomain("venu-pacific-assistant", "/usr/share/locale")
+gettext.textdomain("venu-pacific-assistant")
+_ = gettext.gettext
+
+CSS = b"""
+window { background-color: #16232b; }
+.header-bar {
+    background-color: #1c2b34;
+    border-bottom: 1px solid #2f4650;
+}
+.title { color: #e9e3d6; font-size: 17px; font-weight: bold; letter-spacing: -0.2px; }
+.disclaimer { color: #6b7880; font-size: 11px; font-style: italic; }
+.status { color: #6b7880; font-size: 12px; }
+.role-label {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+}
+.role-user { color: #4fb6ad; }
+.role-assistant { color: #6b7880; }
+.message-user, .message-assistant {
+    font-size: 13.5px;
+    padding: 10px 14px;
+    border-radius: 12px;
+}
+.message-user {
+    background-color: #1f6f74;
+    color: #ffffff;
+}
+.message-assistant {
+    background-color: #24363f;
+    color: #d7dee1;
+}
+.message-thinking {
+    background-color: #24363f;
+    color: #6b7880;
+    font-style: italic;
+}
+scrolledwindow, viewport { background-color: #16232b; }
+entry {
+    background-color: #1c2b34;
+    color: #e9e3d6;
+    /* The text-insertion cursor (caret) is styled separately from the
+       "color" property above in GTK3 -- without this it falls back to a
+       theme default that was too dark to see against this dark background,
+       which is the "stick thing" that was invisible when clicking in. */
+    caret-color: #4fb6ad;
+    border: 1px solid #2f4650;
+    border-radius: 18px;
+    padding: 8px 16px;
+}
+entry:focus { border-color: #4fb6ad; }
+button.send-button {
+    background-color: #1f6f74;
+    background-image: none;
+    box-shadow: none;
+    border: none;
+    color: #ffffff;
+    border-radius: 999px;
+    min-width: 20px;
+    min-height: 20px;
+    padding: 8px;
+}
+button.send-button:hover { background-color: #4fb6ad; }
+button.send-button:disabled { background-color: #2f4650; color: #6b7880; }
+button.icon-button {
+    background-color: transparent;
+    background-image: none;
+    box-shadow: none;
+    border: none;
+    color: #9aa7ad;
+    padding: 6px;
+}
+button.icon-button:hover { background-color: #24363f; color: #e9e3d6; }
+.sidebar {
+    background-color: #111b21;
+    border-right: 1px solid #2f4650;
+}
+button.new-chat-button {
+    background-color: transparent;
+    background-image: none;
+    box-shadow: none;
+    border: 1px solid #2f4650;
+    color: #e9e3d6;
+    border-radius: 8px;
+    padding: 8px 10px;
+}
+button.new-chat-button:hover { background-color: #1c2b34; border-color: #4fb6ad; }
+/* GTK 3.20+'s node-based CSS names these "list"/"row", not the older
+   "listbox"/"listboxrow" widget-class-style selectors -- the old names
+   simply don't match anything, so a rule written against them silently
+   loses to the theme's own default (which is why the sidebar's selected
+   row rendered theme-default blue instead of this teal). Scoped under
+   .sidebar so this doesn't reach into other list widgets that might get
+   added elsewhere later. */
+.sidebar list, .sidebar row {
+    background-color: transparent;
+}
+.sidebar row {
+    padding: 2px;
+}
+.sidebar row:hover { background-color: #1c2b34; }
+.sidebar row:selected {
+    background-color: #1f6f74;
+    box-shadow: none;
+}
+.conversation-title {
+    color: #d7dee1;
+    font-size: 12.5px;
+}
+.sidebar row:selected .conversation-title { color: #ffffff; }
+button.delete-button {
+    background-color: transparent;
+    background-image: none;
+    box-shadow: none;
+    border: none;
+    color: #6b7880;
+    padding: 4px;
+}
+button.delete-button:hover { color: #e07a5f; }
+"""
+
+
+# --- Conversation persistence ----------------------------------------------
+#
+# One JSON file per conversation under ~/.local/share, matching the XDG data
+# convention rather than inventing a new dotfile location. Deliberately not
+# a single combined history file -- deleting one conversation is then just
+# deleting one file, and a corrupt/partial write to one conversation can't
+# take the whole history down with it.
+#
+# Conversations are saved after every completed turn (not just when the
+# user switches away or closes the window) so a crash or force-quit never
+# loses more than the in-flight reply -- the same "never fail silently"
+# principle behind AssistantStartupError above.
+
+DATA_DIR = os.path.expanduser("~/.local/share/venu-pacific-assistant")
+CONVERSATIONS_DIR = os.path.join(DATA_DIR, "conversations")
+TITLE_MAX_CHARS = 40
+
+
+def _conversation_path(conv_id):
+    return os.path.join(CONVERSATIONS_DIR, f"{conv_id}.json")
+
+
+def _make_title(text):
+    collapsed = " ".join(text.split())
+    if len(collapsed) <= TITLE_MAX_CHARS:
+        return collapsed
+    return collapsed[: TITLE_MAX_CHARS - 1].rstrip() + "…"
+
+
+def _list_conversations():
+    """Newest-first list of {id, title, updated} -- reads just enough of
+    each file to build the sidebar, not the full message history."""
+    if not os.path.isdir(CONVERSATIONS_DIR):
+        return []
+    conversations = []
+    for path in glob.glob(os.path.join(CONVERSATIONS_DIR, "*.json")):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            conversations.append(
+                {
+                    "id": data["id"],
+                    "title": data.get("title") or _("Untitled conversation"),
+                    "updated": data.get("updated", ""),
+                }
+            )
+        except Exception:
+            # A corrupt/partial file shouldn't take the whole sidebar down --
+            # skip it rather than crash the app on startup.
+            continue
+    conversations.sort(key=lambda c: c["updated"], reverse=True)
+    return conversations
+
+
+def _load_conversation(conv_id):
+    try:
+        with open(_conversation_path(conv_id), "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _save_conversation(conv_id, title, messages):
+    os.makedirs(CONVERSATIONS_DIR, exist_ok=True)
+    data = {
+        "id": conv_id,
+        "title": title,
+        "updated": datetime.datetime.now().isoformat(timespec="seconds"),
+        "messages": messages,
+    }
+    path = _conversation_path(conv_id)
+    tmp_path = path + ".tmp"
+    # Write-then-rename so a crash mid-write never leaves a half-written
+    # JSON file behind that _load_conversation would then have to reject.
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp_path, path)
+
+
+def _delete_conversation(conv_id):
+    try:
+        os.remove(_conversation_path(conv_id))
+    except FileNotFoundError:
+        pass
+
+
+class AssistantStartupError(Exception):
+    """Raised with a specific, user-facing reason -- the caller must never
+    let a startup failure disappear silently (that was the earlier bug:
+    the UI stayed on "Starting the assistant..." forever with no feedback
+    if llama-server failed to launch for any reason)."""
+
+
+class LlamaServerManager:
+    """Starts/stops the llama-server subprocess on demand -- not resident
+    from boot, so idle RAM stays free on constrained hardware."""
+
+    def __init__(self):
+        self.process = None
+
+    def start(self):
+        if self.process is not None:
+            return
+        if not os.path.exists(LLAMA_SERVER_BIN):
+            raise AssistantStartupError(
+                _("llama-server is missing ({path}).").format(path=LLAMA_SERVER_BIN)
+            )
+        if not os.path.exists(MODEL_PATH):
+            raise AssistantStartupError(
+                _("The assistant model is missing ({path}).").format(path=MODEL_PATH)
+            )
+        try:
+            self.process = subprocess.Popen(
+                [
+                    LLAMA_SERVER_BIN,
+                    "-m", MODEL_PATH,
+                    "--port", str(SERVER_PORT),
+                    "--host", "127.0.0.1",
+                    "-c", "4096",
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError as exc:
+            raise AssistantStartupError(
+                _("Could not launch llama-server: {error}").format(error=exc)
+            )
+
+    def wait_ready(self, timeout=STARTUP_TIMEOUT_SECONDS):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self.process.poll() is not None:
+                raise AssistantStartupError(
+                    _("llama-server exited unexpectedly (code {code}).").format(
+                        code=self.process.returncode
+                    )
+                )
+            try:
+                urllib.request.urlopen(f"{SERVER_URL}/health", timeout=2)
+                return
+            except Exception:
+                time.sleep(0.5)
+        raise AssistantStartupError(_("Timed out waiting for the assistant to start."))
+
+    def stop(self):
+        if self.process is None:
+            return
+        self.process.terminate()
+        try:
+            self.process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+        self.process = None
+
+
+SYSTEM_PROMPT = (
+    "You are a helpful offline assistant. Keep answers concise. For any answer "
+    "longer than one or two sentences, break it into short paragraphs separated "
+    "by blank lines instead of one long block of text -- this is displayed in a "
+    "narrow chat window, so readability matters more than a single flowing "
+    "paragraph.\n\n"
+    "Whenever you need to check something you can check (disk space, Wi-Fi, "
+    "internet, printers, open windows, active window, the time, battery), "
+    "call the matching tool in that same turn. Never say \"let me check\" or "
+    "\"I will check\" as a sentence on its own without actually calling the "
+    "tool right then -- that leaves the user with no answer at all. Call the "
+    "tool, then answer using its real result.\n\n"
+    "For ANY question about disaster/emergency safety (cyclone, tsunami, "
+    "earthquake) or official government/health/education procedures "
+    "(passports, business registration, hospitals, schools, etc.) in "
+    "Vanuatu or Fiji, you MUST call get_disaster_info or get_services_info "
+    "first and answer only from what they return -- never answer these "
+    "topics from general knowledge. If the tool says the country or topic "
+    "isn't covered, say so honestly. Do not fall back to generic or "
+    "other-country knowledge (e.g. do not describe a US, UK, or Australian "
+    "government process for a Vanuatu or Fiji question) -- wrong-country "
+    "official information is worse than admitting you don't have it.\n\n"
+    "For general knowledge questions (not disaster/government-specific), check "
+    "list_offline_encyclopedias then search the available offline reference collections "
+    "(always includes Vikidia, a children's encyclopedia; may also include MedlinePlus, "
+    "Wikipedia Vital Articles, or Gutenberg Education/Agriculture if the user has "
+    "downloaded them) before answering from your own training if you're not confident. "
+    "These are aimed at general/simplified explanations, so they may not cover advanced "
+    "or very specific topics, but prefer a verified source when one exists.\n\n"
+    "If a general knowledge question isn't answered by the offline reference collections, "
+    "tell the user honestly that you couldn't find it locally, then say you'll check the "
+    "internet, then call search_internet. Do NOT do this for disaster/government-service "
+    "questions -- get_disaster_info and get_services_info's 'say so honestly, never fall "
+    "back to generic knowledge' rule stays absolute; search_internet is only for general "
+    "knowledge topics, never as a substitute for those two tools. search_internet requires "
+    "the user's approval and will report 'no internet available' on its own if there's no "
+    "connection -- if that happens, tell the user honestly that you have no way to answer "
+    "that offline.\n\n"
+    "You can ONLY do what the available tools let you do: check disk space, "
+    "check Wi-Fi status, check internet connectivity, check printer status, "
+    "list open windows, check which window is active, check the current "
+    "date/time, check battery status, look up disaster safety info, look up "
+    "government/health/education services, list/search/read offline reference "
+    "collections, search the internet for general knowledge as a last resort, "
+    "list installed applications, open an installed application, "
+    "open the Wi-Fi settings app, open the printer settings app, read a "
+    "text file in the user's home directory, create or overwrite a text file in "
+    "the user's home directory, and find files by name pattern in the user's home "
+    "directory. Use list_installed_applications first if you're not sure of an "
+    "app's exact name before calling open_application. You "
+    "cannot close windows, run arbitrary commands, install or remove "
+    "anything, delete files, directly add or configure a printer, change network "
+    "settings, access files outside the home directory, or "
+    "change settings directly. If asked to do something outside this list, "
+    "say clearly and immediately that you can't do that and suggest what "
+    "the user could do manually -- never ask clarifying questions as if you "
+    "might be able to do it, and never claim "
+    "to have done something you have no tool for."
+)
+
+# --- Desktop tools --------------------------------------------------------
+#
+# Two tiers, declared once in TOOL_REGISTRY below (see that section for the
+# full rationale):
+#
+# - "auto" tools run automatically with no approval prompt. They only ever
+#   report state, never change anything, so the "broad standing visibility"
+#   the assistant has is scoped to *reading*, not *doing*.
+# - "gated" tools change something (even just opening an app) and always
+#   show an approval dialog first, every time -- never a one-time "always
+#   allow". This is the "No unrestricted system access" principle from
+#   ROADMAP.md's Phase 5 design principles; broader visibility doesn't
+#   relax it.
+#
+# Every command below is a fixed argument list with no user input ever
+# interpolated into it -- there is no shell-injection surface here, and
+# there never should be as this list grows.
+
+
+def tool_get_disk_usage():
+    home = os.path.expanduser("~")
+    total, used, free = shutil.disk_usage(home)
+    gb = 1024**3
+    return (
+        f"Disk usage for {home}: {used / gb:.1f}GB used, "
+        f"{free / gb:.1f}GB free, {total / gb:.1f}GB total."
+    )
+
+
+def tool_get_wifi_status():
+    try:
+        result = subprocess.run(
+            ["nmcli", "-t", "-f", "ACTIVE,SSID,SIGNAL", "dev", "wifi"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        for line in result.stdout.splitlines():
+            if line.startswith("yes:"):
+                _active, ssid, signal = line.split(":", 2)
+                return f"Connected to Wi-Fi network '{ssid}', signal strength {signal}%."
+        return "Not currently connected to any Wi-Fi network."
+    except Exception as exc:
+        return f"Could not check Wi-Fi status: {exc}"
+
+
+def tool_get_printer_status():
+    try:
+        result = subprocess.run(
+            ["lpstat", "-p"], capture_output=True, text=True, timeout=10
+        )
+        return result.stdout.strip() or "No printers are currently configured."
+    except Exception as exc:
+        return f"Could not check printer status: {exc}"
+
+
+def _has_internet_connectivity():
+    # Raw TCP connect to a well-known DNS server -- no HTTP request, no data
+    # sent anywhere, just "can we reach the internet at all". Deliberately
+    # not a fetch to any URL, so there's nothing here that could leak
+    # anything or depend on a particular site being up.
+    try:
+        with socket.create_connection(("8.8.8.8", 53), timeout=3):
+            return True
+    except OSError:
+        return False
+
+
+def tool_check_internet_connectivity():
+    if _has_internet_connectivity():
+        return "Yes, this computer currently has internet connectivity."
+    return "No, this computer does not currently have internet connectivity."
+
+
+# --- Internet fallback (general knowledge only) -----------------------------
+#
+# The one deliberate exception to this being an offline-first assistant: if
+# nothing relevant turns up in the offline reference collections, search
+# Wikipedia's own public API for general knowledge, rather than either
+# guessing from training data (the passport-hallucination failure mode this
+# phase already fixed once) or just giving up. Deliberately NOT extended to
+# disaster/services questions -- get_disaster_info/get_services_info's "say
+# so honestly, never fall back to generic knowledge" rule stays absolute for
+# Vanuatu/Fiji official-procedure questions; a random web page is not a
+# substitute for the human-reviewed, cited content those tools already use,
+# and reintroducing an uncurated fallback there would undo that fix.
+#
+# Wikipedia specifically, not a general web search, because: no API key or
+# scraping needed (the MediaWiki search API and REST summary endpoint are
+# free, keyless, and meant for exactly this), and it's a source the model
+# can cite by name and URL like everything else this assistant answers
+# from -- consistent with "prefer a verified source when one exists" rather
+# than synthesizing from arbitrary, unverifiable pages.
+#
+# Gated, not auto: this is real internet use, and per the strategic
+# review's own evidence, mobile data in this region runs ~94% above the
+# world median -- an unconfirmed automatic fetch is a real cost surprise
+# waiting to happen, not just a policy nicety. The connectivity check is
+# done inside the tool itself (not left to the model to remember to call
+# check_internet_connectivity first), so this degrades honestly to "no
+# internet available" even if the model skips straight to searching.
+
+WIKIPEDIA_SEARCH_URL = "https://en.wikipedia.org/w/api.php"
+WIKIPEDIA_SUMMARY_URL = "https://en.wikipedia.org/api/rest_v1/page/summary/{title}"
+# Wikimedia's API etiquette requires a descriptive User-Agent identifying
+# the application -- requests without one are liable to be rate-limited.
+WIKIPEDIA_USER_AGENT = (
+    "PacificLinuxAssistant/1.0 (offline-first Linux distribution for the "
+    "Pacific Islands; local AI assistant's internet-fallback feature)"
+)
+MAX_INTERNET_RESULT_CHARS = 1500
+INTERNET_FETCH_TIMEOUT_SECONDS = 10
+
+
+def tool_search_internet(query):
+    if not _has_internet_connectivity():
+        return "No internet connection is currently available, so this can't be checked online."
+
+    try:
+        search_url = WIKIPEDIA_SEARCH_URL + "?" + urllib.parse.urlencode(
+            {"action": "query", "list": "search", "srsearch": query, "format": "json", "srlimit": 1}
+        )
+        search_req = urllib.request.Request(search_url, headers={"User-Agent": WIKIPEDIA_USER_AGENT})
+        with urllib.request.urlopen(search_req, timeout=INTERNET_FETCH_TIMEOUT_SECONDS) as resp:
+            search_data = json.loads(resp.read())
+        results = search_data.get("query", {}).get("search", [])
+        if not results:
+            return f"No internet results found for '{query}'."
+        title = results[0]["title"]
+
+        summary_url = WIKIPEDIA_SUMMARY_URL.format(title=urllib.parse.quote(title.replace(" ", "_")))
+        summary_req = urllib.request.Request(summary_url, headers={"User-Agent": WIKIPEDIA_USER_AGENT})
+        with urllib.request.urlopen(summary_req, timeout=INTERNET_FETCH_TIMEOUT_SECONDS) as resp:
+            summary_data = json.loads(resp.read())
+
+        extract = summary_data.get("extract") or ""
+        if not extract:
+            return f"Found '{title}' online but it had no readable summary."
+        if len(extract) > MAX_INTERNET_RESULT_CHARS:
+            extract = extract[:MAX_INTERNET_RESULT_CHARS] + "\n\n[...truncated...]"
+        page_url = summary_data.get("content_urls", {}).get("desktop", {}).get("page", "")
+        source_line = f"\n\nSource: {page_url}" if page_url else ""
+        return f"From the internet (Wikipedia) -- '{title}':\n\n{extract}{source_line}"
+    except Exception as exc:
+        return f"Could not search the internet: {exc}"
+
+
+def tool_get_current_datetime():
+    now = datetime.datetime.now()
+    return f"Current date and time: {now.strftime('%A, %d %B %Y, %H:%M:%S')}."
+
+
+def tool_get_battery_status():
+    battery_dirs = glob.glob("/sys/class/power_supply/BAT*")
+    if not battery_dirs:
+        return "No battery detected -- this looks like a desktop machine or the battery isn't reported."
+    try:
+        battery = battery_dirs[0]
+        with open(os.path.join(battery, "capacity")) as f:
+            capacity = f.read().strip()
+        with open(os.path.join(battery, "status")) as f:
+            status = f.read().strip()
+        return f"Battery: {capacity}% ({status})."
+    except Exception as exc:
+        return f"Could not read battery status: {exc}"
+
+
+# --- Knowledge base (disaster-info / services-directory) ------------------
+#
+# The real fix for last session's passport-application hallucination: real,
+# human-cited content already exists for this exact kind of question (see
+# disaster-info/ and services-directory/ built earlier in Phase 2) -- it
+# just wasn't wired into the assistant. Structured lookups against the same
+# JSON these standalone apps already use, not embedding-based RAG: at this
+# content scale (two countries, a handful of categories/hazards each) a
+# vector search would add real complexity and a new way to retrieve the
+# wrong passage, for no benefit over a direct, exact lookup. Revisit if the
+# content library grows into something unstructured/large enough that
+# structured lookups stop being enough.
+#
+# Two-step discover-then-drill-down shape (list categories/hazards first,
+# fetch the specific one after) rather than dumping a whole country's file
+# at once -- a full services-directory file is large enough (~9KB) to eat
+# most of the model's context budget in one tool result otherwise.
+
+DISASTER_INFO_DIR = "/usr/share/venu-pacific/disaster-info"
+SERVICES_DIRECTORY_DIR = "/usr/share/venu-pacific/services-directory"
+KNOWN_COUNTRIES = ["vanuatu", "fiji"]
+
+
+def _load_country_json(base_dir, country):
+    country = (country or "").strip().lower()
+    if country not in KNOWN_COUNTRIES:
+        return None, (
+            f"No information is available for '{country}'. Currently covered: "
+            + ", ".join(KNOWN_COUNTRIES) + "."
+        )
+    path = os.path.join(base_dir, f"{country}.json")
+    if not os.path.isfile(path):
+        return None, f"No content file found for {country}."
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f), None
+    except Exception as exc:
+        return None, f"Could not read content for {country}: {exc}"
+
+
+def _format_sources(sources):
+    if not sources:
+        return ""
+    lines = [f"- {s.get('label', '?')}: {s.get('url', '?')}" for s in sources]
+    return "\n\nSources:\n" + "\n".join(lines)
+
+
+def tool_get_disaster_info(country, hazard=None):
+    data, error = _load_country_json(DISASTER_INFO_DIR, country)
+    if error:
+        return error
+
+    contacts = data.get("emergency_contacts", [])
+    contacts_text = "Emergency contacts:\n" + "\n".join(
+        f"- {c.get('service', '?')}: {c.get('number', '?')}" for c in contacts
+    )
+
+    hazards = data.get("hazards", {})
+    if not hazard:
+        available = ", ".join(h["label"] for h in hazards.values()) if hazards else "none listed"
+        return (
+            f"{contacts_text}\n\nAvailable hazard guidance for {data.get('name', country)}: "
+            f"{available}. Ask again naming a specific hazard for detailed before/during/after "
+            f"guidance."
+        )
+
+    hazard_key = hazard.strip().lower()
+    if hazard_key not in hazards:
+        return (
+            f"{contacts_text}\n\nNo guidance found for hazard '{hazard}'. Available: "
+            + ", ".join(hazards.keys())
+        )
+
+    info = hazards[hazard_key]
+    sections = []
+    for phase in ("before", "during", "after"):
+        items = info.get(phase, [])
+        if items:
+            sections.append(f"{phase.upper()}:\n" + "\n".join(f"- {i}" for i in items))
+    body = "\n\n".join(sections)
+    return (
+        f"{contacts_text}\n\n{info.get('label', hazard)} guidance for "
+        f"{data.get('name', country)}:\n\n{body}"
+        f"{_format_sources(data.get('sources'))}"
+    )
+
+
+def tool_get_services_info(country, category=None):
+    data, error = _load_country_json(SERVICES_DIRECTORY_DIR, country)
+    if error:
+        return error
+
+    categories = data.get("categories", {})
+    if not category:
+        available = ", ".join(
+            f"{key} ({info.get('label', key)})" for key, info in categories.items()
+        )
+        return (
+            f"Available service categories for {data.get('name', country)}: {available}. "
+            f"Ask again naming a specific category for the actual contacts/details."
+        )
+
+    cat_key = category.strip().lower()
+    if cat_key not in categories:
+        return (
+            f"No category '{category}' found. Available: " + ", ".join(categories.keys())
+        )
+
+    items = categories[cat_key].get("items", [])
+    lines = []
+    for item in items:
+        parts = [f"- {item.get('name', '?')}"]
+        if item.get("agency"):
+            parts.append(f"  Agency: {item['agency']}")
+        if item.get("location"):
+            parts.append(f"  Location: {item['location']}")
+        if item.get("contact"):
+            parts.append(f"  Contact: {item['contact']}")
+        if item.get("description"):
+            parts.append(f"  {item['description']}")
+        lines.append("\n".join(parts))
+
+    body = "\n\n".join(lines) if lines else "No items listed in this category."
+    return (
+        f"{categories[cat_key].get('label', category)} services in {data.get('name', country)}:"
+        f"\n\n{body}"
+        f"{_format_sources(data.get('sources'))}"
+    )
+
+
+# --- Offline encyclopedia content (Vikidia + anything the user downloads
+# --- via the kiwix-content/ guide, all via Kiwix) --------------------------
+#
+# kiwix-search / zimdump come from separate packages (kiwix-tools, zim-tools)
+# from the `kiwix` package itself (kiwix-desktop, the GUI app, has no CLI) --
+# confirmed by checking what `kiwix` actually depends on before assuming
+# these existed. Both verified directly against the real bundled vikidia.zim
+# before writing this: kiwix-search returns matching titles; zimdump show
+# --url=<title> returns the article's raw HTML, stripped to plain text here
+# via BeautifulSoup so it doesn't burn context budget on markup.
+#
+# Users can download more ZIM content (MedlinePlus, Wikipedia Vital Articles,
+# Gutenberg Education/Agriculture) via kiwix-content/index.html's guide --
+# rather than a filesystem-wide scan (too broad, matches nothing we've
+# scoped elsewhere) or requiring a new dedicated folder (extra friction, a
+# new convention users would have to learn), check the two locations that
+# already matter: where bundled content ships, and where that same guide
+# already sends users to download to (Firefox's default, ~/Downloads).
+
+KIWIX_SEARCH_BIN = "/usr/bin/kiwix-search"
+ZIMDUMP_BIN = "/usr/bin/zimdump"
+KIWIX_CONTENT_DIRS = [
+    "/usr/share/venu-pacific/kiwix-content",
+    os.path.expanduser("~/Downloads"),
+]
+# Real end-to-end test showed a 4000-char article made the first tool-result
+# prompt over 2000 tokens, which took ~70s to process alone at this model's
+# speed on this hardware, before generation even started. Trimmed down --
+# Vikidia articles are already written for children (ages 8-13), so a
+# shorter excerpt still captures the core content for most questions.
+MAX_ARTICLE_CHARS = 1500
+
+
+def _discover_zim_files():
+    """Maps a collection name -> ZIM file path, for every .zim found in the
+    known content directories. Not a filesystem-wide search -- see the
+    section comment above for why."""
+    found = {}
+    for directory in KIWIX_CONTENT_DIRS:
+        if not os.path.isdir(directory):
+            continue
+        for path in glob.glob(os.path.join(directory, "*.zim")):
+            name = os.path.splitext(os.path.basename(path))[0]
+            found[name] = path
+    return found
+
+
+def _html_to_text(html_content):
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html_content, "html.parser")
+    for tag in soup(["script", "style"]):
+        tag.decompose()
+    lines = [line.strip() for line in soup.get_text(separator="\n").splitlines()]
+    return "\n".join(line for line in lines if line)
+
+
+def tool_list_offline_encyclopedias():
+    zims = _discover_zim_files()
+    if not zims:
+        return "No offline encyclopedia/reference content is currently available."
+    return "Available offline collections: " + ", ".join(sorted(zims.keys()))
+
+
+def tool_search_offline_encyclopedia(query, collection=None):
+    zims = _discover_zim_files()
+    if not zims:
+        return "No offline encyclopedia/reference content is currently available."
+    if collection:
+        if collection not in zims:
+            return f"No collection named '{collection}'. Available: " + ", ".join(sorted(zims.keys()))
+        zims = {collection: zims[collection]}
+
+    all_results = []
+    for name, path in zims.items():
+        try:
+            result = subprocess.run(
+                [KIWIX_SEARCH_BIN, path, query], capture_output=True, text=True, timeout=15
+            )
+            titles = [t for t in result.stdout.splitlines() if t.strip()][:5]
+            all_results.extend(f"- {t} (in {name})" for t in titles)
+        except Exception:
+            continue
+
+    if not all_results:
+        return f"No articles found for '{query}'."
+    return (
+        "Matching articles -- use get_encyclopedia_article with the exact title AND "
+        "collection name to read one:\n" + "\n".join(all_results[:10])
+    )
+
+
+def tool_get_encyclopedia_article(title, collection):
+    zims = _discover_zim_files()
+    if collection not in zims:
+        return f"No collection named '{collection}'. Available: " + ", ".join(sorted(zims.keys()))
+    zim_path = zims[collection]
+    try:
+        result = subprocess.run(
+            [ZIMDUMP_BIN, "show", f"--url={title}", "--", zim_path],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return (
+                f"No article found with the exact title '{title}' in '{collection}'. Use "
+                "search_offline_encyclopedia first to find the correct title."
+            )
+        text = _html_to_text(result.stdout)
+        if len(text) > MAX_ARTICLE_CHARS:
+            text = text[:MAX_ARTICLE_CHARS] + "\n\n[...article truncated...]"
+        return f"Article '{title}' (from {collection}):\n\n{text}"
+    except Exception as exc:
+        return f"Could not read the article: {exc}"
+
+
+def tool_get_active_window():
+    # Same main-thread requirement as tool_list_open_windows below.
+    result = {}
+    done = threading.Event()
+
+    def do_it():
+        try:
+            screen = Wnck.Screen.get_default()
+            active = screen.get_active_window()
+            result["name"] = active.get_name() if active else None
+        except Exception as exc:
+            result["error"] = str(exc)
+        done.set()
+        return False
+
+    GLib.idle_add(do_it)
+    done.wait(timeout=10)
+
+    if "error" in result:
+        return f"Could not check the active window: {result['error']}"
+    name = result.get("name")
+    return f"The currently active window is: {name}" if name else "No window is currently active/focused."
+
+
+def tool_list_open_windows():
+    # Wnck (like all GDK/GTK APIs) must only be touched from the GTK main
+    # thread. Tool execution happens on the background worker thread (see
+    # query_assistant), so calling Wnck directly here silently returns wrong
+    # results (empty list) rather than crashing -- confirmed the hard way in
+    # real testing, not theoretical. Marshal the actual call onto the main
+    # loop via GLib.idle_add and block this thread until it's done, same
+    # pattern as the approval dialog.
+    result = {}
+    done = threading.Event()
+
+    def do_it():
+        try:
+            # No force_update() here -- confirmed the hard way that calling
+            # it from inside a GLib.idle_add callback trips Wnck's own
+            # reentrancy guard (it appears to pump the main loop internally,
+            # and we're already inside a main-loop callback). The screen
+            # object is kept current via ordinary passive event processing
+            # once the main loop has been running for a bit, which is
+            # already true by the time a user is actively chatting.
+            screen = Wnck.Screen.get_default()
+            result["names"] = [w.get_name() for w in screen.get_windows() if w.get_name()]
+        except Exception as exc:
+            result["error"] = str(exc)
+        done.set()
+        return False
+
+    GLib.idle_add(do_it)
+    done.wait(timeout=10)
+
+    if "error" in result:
+        return f"Could not list open windows: {result['error']}"
+    names = result.get("names", [])
+    return "Open windows: " + ", ".join(names) if names else "No open windows detected."
+
+
+def tool_open_wifi_settings():
+    subprocess.Popen(["nm-connection-editor"])
+    return "Opened the Wi-Fi/network connection settings."
+
+
+def tool_open_printer_settings():
+    subprocess.Popen(["system-config-printer"])
+    return "Opened the printer settings."
+
+
+# --- Application launching --------------------------------------------------
+#
+# Launches via Gio.AppInfo, the same mechanism XFCE's own application menu
+# uses to launch things -- not a raw subprocess call with a model-supplied
+# command string. This only ever runs whatever Exec= a real, already-
+# installed .desktop file declares; there is no way to reach it with an
+# arbitrary command, which is the point (see the strategic review's "no
+# arbitrary AI-generated shell commands in the first release").
+#
+# should_show() filters out NoDisplay/Hidden entries -- the same filter the
+# application menu itself applies -- so this only ever surfaces apps a human
+# would actually see and choose from, not every helper/background .desktop
+# file installed on the system.
+
+
+def _list_installed_apps():
+    """Maps a lowercased display name -> its Gio.AppInfo, for every
+    user-visible installed application."""
+    apps = {}
+    for info in Gio.AppInfo.get_all():
+        if not info.should_show():
+            continue
+        apps[info.get_display_name().lower()] = info
+    return apps
+
+
+def tool_list_installed_applications():
+    apps = _list_installed_apps()
+    if not apps:
+        return "No installed applications could be listed."
+    names = sorted({info.get_display_name() for info in apps.values()})
+    return "Installed applications: " + ", ".join(names)
+
+
+def tool_open_application(name):
+    apps = _list_installed_apps()
+    key = (name or "").strip().lower()
+    match = apps.get(key)
+    if match is None:
+        candidates = sorted(n for n in apps if key and key in n)
+        if len(candidates) == 1:
+            match = apps[candidates[0]]
+        elif len(candidates) > 1:
+            return (
+                f"Multiple installed applications match '{name}': "
+                + ", ".join(apps[n].get_display_name() for n in candidates)
+                + ". Be more specific."
+            )
+        else:
+            return f"No installed application found matching '{name}'."
+    try:
+        match.launch([], None)
+        return f"Opened {match.get_display_name()}."
+    except GLib.Error as exc:
+        return f"Could not open {match.get_display_name()}: {exc}"
+
+
+HOME_DIR = os.path.realpath(os.path.expanduser("~"))
+MAX_READ_FILE_BYTES = 100_000
+MAX_FIND_FILE_RESULTS = 50
+
+
+def _resolve_home_path(path):
+    """Refuse anything outside the home directory -- defense in depth on
+    top of normal file permissions, since the point of gating isn't just
+    "can the OS technically allow this" but "should the assistant be
+    reading/writing it at all"."""
+    resolved = os.path.realpath(os.path.join(HOME_DIR, os.path.expanduser(path)))
+    if resolved != HOME_DIR and not resolved.startswith(HOME_DIR + os.sep):
+        raise ValueError(f"Refusing to access paths outside the home directory: {path}")
+    return resolved
+
+
+def tool_read_file(path):
+    try:
+        resolved = _resolve_home_path(path)
+        if not os.path.isfile(resolved):
+            return f"No such file: {path}"
+        size = os.path.getsize(resolved)
+        if size > MAX_READ_FILE_BYTES:
+            return f"File is too large to read ({size} bytes, limit {MAX_READ_FILE_BYTES}): {path}"
+        with open(resolved, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read()
+        return f"Contents of {path}:\n\n{content}"
+    except ValueError as exc:
+        return str(exc)
+    except Exception as exc:
+        return f"Could not read {path}: {exc}"
+
+
+def tool_write_file(path, content):
+    try:
+        resolved = _resolve_home_path(path)
+        os.makedirs(os.path.dirname(resolved), exist_ok=True)
+        with open(resolved, "w", encoding="utf-8") as f:
+            f.write(content)
+        return f"Wrote {len(content)} characters to {path}."
+    except ValueError as exc:
+        return str(exc)
+    except Exception as exc:
+        return f"Could not write {path}: {exc}"
+
+
+def tool_find_file(pattern, scope=None):
+    try:
+        base = _resolve_home_path(scope) if scope else HOME_DIR
+    except ValueError as exc:
+        return str(exc)
+    if not os.path.isdir(base):
+        return f"No such directory: {scope}"
+
+    matches = []
+    pattern_lower = pattern.lower()
+    for root, _dirs, files in os.walk(base):
+        for name in files:
+            if fnmatch.fnmatch(name.lower(), pattern_lower):
+                matches.append(os.path.relpath(os.path.join(root, name), HOME_DIR))
+                if len(matches) >= MAX_FIND_FILE_RESULTS:
+                    break
+        if len(matches) >= MAX_FIND_FILE_RESULTS:
+            break
+
+    if not matches:
+        return f"No files matching '{pattern}' found under {scope or '~'}."
+    suffix = f" (showing first {MAX_FIND_FILE_RESULTS})" if len(matches) >= MAX_FIND_FILE_RESULTS else ""
+    return f"Files matching '{pattern}'{suffix}:\n" + "\n".join(f"- {m}" for m in matches)
+
+
+# --- Tool registry ----------------------------------------------------------
+#
+# Single source of truth for every tool the assistant can call. Before this,
+# adding or changing a tool meant hand-editing up to four separate places --
+# the TOOLS JSON-schema list, the READ_ONLY_TOOLS or GATED_TOOLS dispatch
+# dict, and (for gated tools) GATED_TOOL_DESCRIPTIONS too -- with nothing
+# enforcing they stayed in sync. That's a real correctness risk (e.g.
+# registering a tool's schema but forgetting to also gate it) as the tool
+# list keeps growing. Every tool is declared exactly once below; the schema
+# list and dispatch dicts the rest of the app uses are all derived from it.
+#
+# Each entry's "tier" is one of:
+#   - "auto":  runs immediately, no prompt. Only ever reports state.
+#   - "gated": shows a Yes/No approval dialog every time, no "always
+#     allow". Changes something, even just opening a settings app.
+# See the "Desktop tools" comment above for the reasoning behind that split.
+#
+# Deliberately no third "prohibited" tier as data here, unlike the richer
+# prohibited/explicit-approval/regular model this design was inspired by
+# (Claude Code's own tool permissions). Every action this assistant has no
+# tool for at all -- deleting files, running arbitrary commands, installing
+# packages, changing system settings directly -- is already prohibited
+# simply by never appearing in this registry, enforced by SYSTEM_PROMPT's
+# instruction to decline anything outside this list. A data-driven
+# "prohibited" tier would have zero members and add a layer for nothing;
+# revisit only if a genuinely destructive-but-sometimes-wanted tool shows up
+# that needs stricter-than-"gated" handling (e.g. a second confirmation, or
+# a cooldown) that plain gating can't express.
+#
+# "describe" is only meaningful for gated tools: a function of the call's
+# arguments -> the human-readable approval text shown in the dialog. A
+# generic "write_file" label would hide exactly what's about to be
+# overwritten, which defeats the point of asking, so file tools describe
+# themselves with the actual path/content in play.
+
+
+def _describe_read_file(arguments):
+    return _("read the file '{path}'").format(path=arguments.get("path", "?"))
+
+
+def _describe_write_file(arguments):
+    path = arguments.get("path", "?")
+    content = arguments.get("content", "")
+    preview = content[:120] + ("…" if len(content) > 120 else "")
+    exists = False
+    try:
+        exists = os.path.isfile(_resolve_home_path(path))
+    except ValueError:
+        pass
+    verb = _("overwrite the existing file") if exists else _("create the file")
+    return _("{verb} '{path}' with:\n\n{preview}").format(verb=verb, path=path, preview=preview)
+
+
+def _describe_open_application(arguments):
+    return _("open the application '{name}'").format(name=arguments.get("name", "?"))
+
+
+def _describe_find_file(arguments):
+    scope = arguments.get("scope")
+    pattern = arguments.get("pattern", "?")
+    if scope:
+        return _("search '{scope}' for files matching '{pattern}'").format(scope=scope, pattern=pattern)
+    return _("search your home directory for files matching '{pattern}'").format(pattern=pattern)
+
+
+TOOL_REGISTRY = [
+    {
+        "name": "get_disk_usage",
+        "tier": "auto",
+        "handler": tool_get_disk_usage,
+        "schema": {
+            "description": "Get current disk space usage (used/free/total) for the user's home directory.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "name": "get_wifi_status",
+        "tier": "auto",
+        "handler": tool_get_wifi_status,
+        "schema": {
+            "description": "Check whether the computer is currently connected to a Wi-Fi network, and its signal strength.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "name": "get_printer_status",
+        "tier": "auto",
+        "handler": tool_get_printer_status,
+        "schema": {
+            "description": "List configured printers and whether they are ready, idle, or have an error.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "name": "list_open_windows",
+        "tier": "auto",
+        "handler": tool_list_open_windows,
+        "schema": {
+            "description": "List the names of currently open application windows on the desktop.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "name": "check_internet_connectivity",
+        "tier": "auto",
+        "handler": tool_check_internet_connectivity,
+        "schema": {
+            "description": "Check whether this computer currently has a working internet connection.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "name": "get_current_datetime",
+        "tier": "auto",
+        "handler": tool_get_current_datetime,
+        "schema": {
+            "description": "Get the current date and time on this computer.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "name": "get_battery_status",
+        "tier": "auto",
+        "handler": tool_get_battery_status,
+        "schema": {
+            "description": "Get the current battery charge percentage and charging status, if this machine has a battery.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "name": "get_active_window",
+        "tier": "auto",
+        "handler": tool_get_active_window,
+        "schema": {
+            "description": "Get the name of the application window the user is currently focused on/actively using.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "name": "get_disaster_info",
+        "tier": "auto",
+        "handler": tool_get_disaster_info,
+        "schema": {
+            "description": (
+                "Get real, official, cited emergency contacts and cyclone/tsunami/earthquake "
+                "safety guidance for a Pacific country. This is authoritative, human-reviewed "
+                "content -- always prefer this over general knowledge for disaster/safety "
+                "questions about a covered country. If hazard is omitted, returns emergency "
+                "contacts plus which hazards are available."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "country": {
+                        "type": "string",
+                        "enum": KNOWN_COUNTRIES,
+                        "description": "The country to look up.",
+                    },
+                    "hazard": {
+                        "type": "string",
+                        "enum": ["cyclone", "tsunami", "earthquake"],
+                        "description": "Optional: a specific hazard for detailed before/during/after guidance.",
+                    },
+                },
+                "required": ["country"],
+            },
+        },
+    },
+    {
+        "name": "get_services_info",
+        "tier": "auto",
+        "handler": tool_get_services_info,
+        "schema": {
+            "description": (
+                "Get real, official, cited government/health/education service directory "
+                "information for a Pacific country (e.g. passport applications, business "
+                "registration, hospitals, schools). This is authoritative, human-reviewed "
+                "content -- always prefer this over general knowledge for official-procedure "
+                "questions about a covered country, and never invent details from a different "
+                "country's system (e.g. do not answer with US/UK/Australian procedures for a "
+                "Pacific country question). If category is omitted, returns which categories "
+                "are available."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "country": {
+                        "type": "string",
+                        "enum": KNOWN_COUNTRIES,
+                        "description": "The country to look up.",
+                    },
+                    "category": {
+                        "type": "string",
+                        "enum": ["government", "health", "education"],
+                        "description": "Optional: a specific service category for the actual contacts/details.",
+                    },
+                },
+                "required": ["country"],
+            },
+        },
+    },
+    {
+        "name": "list_offline_encyclopedias",
+        "tier": "auto",
+        "handler": tool_list_offline_encyclopedias,
+        "schema": {
+            "description": (
+                "List which offline reference collections are currently available (the "
+                "bundled Vikidia children's encyclopedia, plus anything the user has "
+                "downloaded via the offline content guide, e.g. MedlinePlus health info, "
+                "Wikipedia Vital Articles, Gutenberg Education/Agriculture)."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "name": "search_offline_encyclopedia",
+        "tier": "auto",
+        "handler": tool_search_offline_encyclopedia,
+        "schema": {
+            "description": (
+                "Search offline reference content for articles matching a topic. Use this "
+                "for general knowledge questions the disaster/services tools don't cover. "
+                "Searches all available collections unless a specific one is named. Returns "
+                "matching article titles -- follow up with get_encyclopedia_article to read one."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search terms, e.g. a topic or keyword.",
+                    },
+                    "collection": {
+                        "type": "string",
+                        "description": "Optional: restrict the search to one specific collection (see list_offline_encyclopedias).",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "name": "get_encyclopedia_article",
+        "tier": "auto",
+        "handler": tool_get_encyclopedia_article,
+        "schema": {
+            "description": (
+                "Read the full text of a specific offline reference article by its exact "
+                "title and collection. Use search_offline_encyclopedia first to find both."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "The exact article title, as returned by search_offline_encyclopedia.",
+                    },
+                    "collection": {
+                        "type": "string",
+                        "description": "The collection the article is in, as returned by search_offline_encyclopedia.",
+                    },
+                },
+                "required": ["title", "collection"],
+            },
+        },
+    },
+    {
+        "name": "list_installed_applications",
+        "tier": "auto",
+        "handler": tool_list_installed_applications,
+        "schema": {
+            "description": "List the names of applications installed on this computer that the user could open.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "name": "open_wifi_settings",
+        "tier": "gated",
+        "handler": tool_open_wifi_settings,
+        "describe": lambda arguments: _("open the Wi-Fi/network settings"),
+        "schema": {
+            "description": (
+                "Open the Wi-Fi/network connection settings application so the "
+                "user can connect to a network. This opens an application on "
+                "the user's desktop and requires their approval."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "name": "open_printer_settings",
+        "tier": "gated",
+        "handler": tool_open_printer_settings,
+        "describe": lambda arguments: _("open the printer settings"),
+        "schema": {
+            "description": (
+                "Open the printer settings application so the user can add or "
+                "configure a printer. This opens an application on the user's "
+                "desktop and requires their approval."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "name": "open_application",
+        "tier": "gated",
+        "handler": tool_open_application,
+        "describe": _describe_open_application,
+        "schema": {
+            "description": (
+                "Open/launch an installed application by name (e.g. a text editor, "
+                "file manager, or office app). Use list_installed_applications first "
+                "if you're not sure of the exact name. This opens an application on "
+                "the user's desktop and requires their approval."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "The application's display name, as shown by list_installed_applications.",
+                    }
+                },
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "name": "read_file",
+        "tier": "gated",
+        "handler": tool_read_file,
+        "describe": _describe_read_file,
+        "schema": {
+            "description": (
+                "Read the contents of a text file in the user's home directory. "
+                "Requires user approval since it exposes file contents to the "
+                "assistant."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to the file, relative to or within the home directory.",
+                    }
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "name": "write_file",
+        "tier": "gated",
+        "handler": tool_write_file,
+        "describe": _describe_write_file,
+        "schema": {
+            "description": (
+                "Create a new file, or overwrite an existing one, with the "
+                "given text content, inside the user's home directory. "
+                "Requires user approval since it can overwrite existing data."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to the file, relative to or within the home directory.",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "The full text content to write to the file.",
+                    },
+                },
+                "required": ["path", "content"],
+            },
+        },
+    },
+    {
+        "name": "find_file",
+        "tier": "gated",
+        "handler": tool_find_file,
+        "describe": _describe_find_file,
+        "schema": {
+            "description": (
+                "Search for files by name pattern (e.g. '*.pdf', 'invoice*') within "
+                "the user's home directory, or a subfolder of it. Returns matching "
+                "file paths only, not their contents. Requires user approval since "
+                "it exposes file names/locations to the assistant."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {
+                        "type": "string",
+                        "description": "Filename pattern to match, e.g. '*.pdf' or 'report*.docx'.",
+                    },
+                    "scope": {
+                        "type": "string",
+                        "description": "Optional: a subfolder of the home directory to limit the search to. Defaults to the whole home directory.",
+                    },
+                },
+                "required": ["pattern"],
+            },
+        },
+    },
+    {
+        "name": "search_internet",
+        "tier": "gated",
+        "handler": tool_search_internet,
+        "describe": lambda arguments: _("search the internet for '{query}' (uses mobile data)").format(
+            query=arguments.get("query", "?")
+        ),
+        "schema": {
+            "description": (
+                "Search the internet (Wikipedia) for general knowledge, ONLY when nothing "
+                "relevant was found in the offline reference collections (list/search/read "
+                "offline reference collections). Never use this in place of get_disaster_info "
+                "or get_services_info -- if a Vanuatu/Fiji disaster or government-service topic "
+                "isn't covered locally, say so honestly instead of searching the internet for "
+                "it. Automatically reports 'no internet available' if there's no connection. "
+                "Requires user approval and uses the user's internet connection/mobile data."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "What to search for."}
+                },
+                "required": ["query"],
+            },
+        },
+    },
+]
+
+TOOLS = [
+    {"type": "function", "function": {"name": entry["name"], **entry["schema"]}}
+    for entry in TOOL_REGISTRY
+]
+
+READ_ONLY_TOOLS = {
+    entry["name"]: entry["handler"] for entry in TOOL_REGISTRY if entry["tier"] == "auto"
+}
+
+GATED_TOOLS = {
+    entry["name"]: entry["handler"] for entry in TOOL_REGISTRY if entry["tier"] == "gated"
+}
+
+GATED_DESCRIBERS = {
+    entry["name"]: entry["describe"] for entry in TOOL_REGISTRY if entry["tier"] == "gated"
+}
+
+
+def _describe_gated_call(name, arguments):
+    describer = GATED_DESCRIBERS.get(name)
+    return describer(arguments) if describer else name
+
+
+def query_assistant(user_text, history, request_approval):
+    # /no_think keeps interactive replies fast -- reasoning mode is useful
+    # for the translation post-editing prototype but too slow for chat.
+    messages = (
+        [{"role": "system", "content": SYSTEM_PROMPT}]
+        + history
+        + [{"role": "user", "content": user_text + "\n\n/no_think"}]
+    )
+
+    # Some documented workflows need several tool calls before an answer is
+    # even possible -- e.g. "learn about X" is list_offline_encyclopedias ->
+    # search_offline_encyclopedia -> get_encyclopedia_article, three calls,
+    # *before* the model can write anything back. A single round budget that
+    # covers both the tool calls AND the final answer (as this used to be)
+    # can run out exactly on the round that should have been the answer,
+    # confirmed for real: that three-call chain plus a final answer is 4
+    # model queries, and a flat `range(3)` cap left zero room for the last
+    # one. Fixed by budgeting tool-call rounds and the final answer
+    # separately: after MAX_TOOL_ROUNDS rounds of possible tool calls, make
+    # one last request with no `tools` offered at all, which forces a text
+    # answer grounded in whatever's already been retrieved instead of
+    # attempting a tool call that would just be dropped on the floor.
+    MAX_TOOL_ROUNDS = 4
+    for round_index in range(MAX_TOOL_ROUNDS + 1):
+        force_final_answer = round_index == MAX_TOOL_ROUNDS
+        payload = {"messages": messages, "temperature": 0.3, "max_tokens": 500}
+        if not force_final_answer:
+            payload["tools"] = TOOLS
+        req = urllib.request.Request(
+            f"{SERVER_URL}/v1/chat/completions",
+            data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            data = json.loads(resp.read())
+        message = data["choices"][0]["message"]
+        tool_calls = message.get("tool_calls")
+        if not tool_calls:
+            return (message.get("content") or "").strip()
+
+        messages.append(message)
+        for call in tool_calls:
+            name = call["function"]["name"]
+            call_id = call.get("id", "")
+            try:
+                arguments = json.loads(call["function"].get("arguments") or "{}")
+            except json.JSONDecodeError:
+                arguments = {}
+
+            if name in READ_ONLY_TOOLS:
+                try:
+                    result = READ_ONLY_TOOLS[name](**arguments)
+                except TypeError as exc:
+                    result = f"Bad arguments for {name}: {exc}"
+            elif name in GATED_TOOLS:
+                description = _describe_gated_call(name, arguments)
+                if request_approval(description):
+                    try:
+                        result = GATED_TOOLS[name](**arguments)
+                    except TypeError as exc:
+                        result = f"Bad arguments for {name}: {exc}"
+                else:
+                    result = "The user did not approve this action."
+            else:
+                result = f"Unknown tool: {name}"
+            messages.append({"role": "tool", "tool_call_id": call_id, "content": result})
+
+    return _("Sorry, I couldn't finish that after checking a few things.")
+
+
+def _wrap_message_text(text, width=52):
+    """Pre-wrap text with literal newlines at a fixed character width.
+
+    Preserves intentional paragraph breaks (blank lines) from the model's
+    own formatting -- only wraps within each paragraph, not across them.
+    """
+    paragraphs = text.split("\n\n")
+    wrapped = [
+        textwrap.fill(p, width=width) if p.strip() else p for p in paragraphs
+    ]
+    return "\n\n".join(wrapped)
+
+
+def _first_available_icon(theme, candidates):
+    """First icon name from candidates that actually exists in the running
+    icon theme, or None. Icon themes don't all cover every freedesktop name
+    (confirmed some do, some don't -- see ROADMAP.md's UI redesign notes),
+    so every icon-only button falls back to short text rather than risk a
+    broken-image glyph."""
+    return next((name for name in candidates if theme.has_icon(name)), None)
+
+
+class PulsingLogo(Gtk.Image):
+    """The Venu Pacific logo with a soft, continuous heartbeat-style pulse
+    -- shown wherever the assistant wants to say "I'm working on this"
+    (starting up, waiting for a reply) without needing any words.
+
+    GTK3's CSS engine only animates on state changes (hover, active, etc.)
+    -- there's no free-running @keyframes loop to lean on for a continuous
+    idle animation -- so this drives the pulse from Python instead, ticking
+    the whole widget's opacity up and down via GLib.timeout_add. The timer
+    starts/stops itself off the widget's own map/unmap signals, so a caller
+    just needs to show()/hide() this like any other widget and the
+    animation follows -- no separate start/stop bookkeeping to forget.
+    """
+
+    TICK_MS = 60
+    MIN_OPACITY = 0.35
+
+    def __init__(self, size=28):
+        super().__init__()
+        if os.path.exists(LOGO_PATH):
+            pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(LOGO_PATH, size, size, True)
+            self.set_from_pixbuf(pixbuf)
+        self._phase = 0.0
+        self._timeout_id = None
+        self.connect("map", self._on_map)
+        self.connect("unmap", self._on_unmap)
+
+    def _on_map(self, *_args):
+        if self._timeout_id is None:
+            self._timeout_id = GLib.timeout_add(self.TICK_MS, self._tick)
+
+    def _on_unmap(self, *_args):
+        if self._timeout_id is not None:
+            GLib.source_remove(self._timeout_id)
+            self._timeout_id = None
+
+    def _tick(self):
+        self._phase += 0.18
+        wave = (math.sin(self._phase) + 1) / 2  # 0..1
+        self.set_opacity(self.MIN_OPACITY + wave * (1.0 - self.MIN_OPACITY))
+        return True
+
+
+class AssistantWindow(Gtk.Window):
+    def __init__(self):
+        super().__init__(title=_("Pacific AI Assistant"))
+        # Wider than before to make room for the chat-history sidebar
+        # alongside the chat area, not instead of it.
+        self.set_default_size(880, 640)
+        self.set_position(Gtk.WindowPosition.CENTER)
+        # No max-size geometry hint here (removed) -- it was a workaround
+        # for window growth that turned out to be caused by a real bug
+        # (see _on_reply/_wrap_message_text), not something that needed a
+        # hard size cap. Keeping the hint after the real fix landed only
+        # broke maximize/restore for no remaining benefit.
+
+        self.server = LlamaServerManager()
+        self.history = []
+        # None means "a new, not-yet-saved conversation" -- nothing is
+        # written to disk until the first reply completes (see _on_reply),
+        # so quitting without sending anything never leaves an empty
+        # conversation cluttering the sidebar.
+        self.current_conv_id = None
+        self._server_starting = False
+        self.connect("destroy", self.on_destroy)
+
+        # Touch the Wnck screen singleton now, on the main thread, at
+        # startup -- it populates its window list from passive X11 event
+        # processing over time, not instantly. Without this warmup, the
+        # very first list_open_windows tool call (which can happen soon
+        # after the window opens) can race ahead of that and see an empty
+        # list. Confirmed this race in real testing, not theoretical.
+        Wnck.Screen.get_default()
+
+        outer = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        self.add(outer)
+
+        self.sidebar = self._build_sidebar()
+        outer.pack_start(self.sidebar, False, False, 0)
+
+        main_pane = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        main_pane.pack_start(self._build_header(), False, False, 0)
+        main_pane.pack_start(self._build_chat_area(), True, True, 0)
+        main_pane.pack_start(self._build_input_area(), False, False, 0)
+        outer.pack_start(main_pane, True, True, 0)
+
+        self._start_server_async()
+
+    def _icon_button(self, icon_candidates, fallback_text, css_class, tooltip):
+        """Icon-only button. Falls back to short text if none of the
+        candidate icon names exist in the running icon theme -- see
+        _first_available_icon."""
+        button = Gtk.Button()
+        button.set_relief(Gtk.ReliefStyle.NONE)
+        button.get_style_context().add_class(css_class)
+        button.set_tooltip_text(tooltip)
+        icon_name = _first_available_icon(Gtk.IconTheme.get_default(), icon_candidates)
+        if icon_name:
+            button.add(Gtk.Image.new_from_icon_name(icon_name, Gtk.IconSize.BUTTON))
+        else:
+            button.add(Gtk.Label(label=fallback_text))
+        return button
+
+    def _build_sidebar(self):
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        outer.get_style_context().add_class("sidebar")
+        outer.set_size_request(220, -1)
+        outer.set_border_width(10)
+
+        theme = Gtk.IconTheme.get_default()
+
+        new_chat = Gtk.Button()
+        new_chat.get_style_context().add_class("new-chat-button")
+        new_chat_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        new_chat_icon = _first_available_icon(theme, ("list-add-symbolic",))
+        if new_chat_icon:
+            new_chat_row.pack_start(
+                Gtk.Image.new_from_icon_name(new_chat_icon, Gtk.IconSize.BUTTON), False, False, 0
+            )
+        new_chat_row.pack_start(Gtk.Label(label=_("New chat")), False, False, 0)
+        new_chat.add(new_chat_row)
+        new_chat.connect("clicked", self.on_new_chat)
+        # Disabled until the assistant is actually ready -- "New chat" (and
+        # switching conversations below) clears the chat area, which would
+        # destroy the "Try again" retry button while a startup attempt is
+        # still in progress or has just failed.
+        new_chat.set_sensitive(False)
+        self.new_chat_button = new_chat
+        outer.pack_start(new_chat, False, False, 0)
+
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        self.conversation_list = Gtk.ListBox()
+        self.conversation_list.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        self.conversation_list.connect("row-activated", self.on_conversation_selected)
+        self.conversation_list.set_sensitive(False)
+        scroller.add(self.conversation_list)
+        outer.pack_start(scroller, True, True, 0)
+
+        self._refresh_conversation_list()
+
+        return outer
+
+    def _refresh_conversation_list(self):
+        """Rebuilds the sidebar from disk. Cheap enough to call after every
+        save/delete rather than try to patch the list in place -- conversation
+        counts here are small (personal local history, not a shared system)."""
+        for child in self.conversation_list.get_children():
+            child.destroy()
+
+        theme = Gtk.IconTheme.get_default()
+        delete_icon = _first_available_icon(
+            theme, ("user-trash-symbolic", "edit-delete-symbolic")
+        )
+
+        selected_row = None
+        for conv in _list_conversations():
+            row = Gtk.ListBoxRow()
+            row.conv_id = conv["id"]
+
+            box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+            box.set_border_width(6)
+
+            title = Gtk.Label(label=conv["title"], xalign=0)
+            title.set_ellipsize(Pango.EllipsizeMode.END)
+            title.get_style_context().add_class("conversation-title")
+            box.pack_start(title, True, True, 0)
+
+            delete_button = Gtk.Button()
+            delete_button.set_relief(Gtk.ReliefStyle.NONE)
+            delete_button.get_style_context().add_class("delete-button")
+            delete_button.set_tooltip_text(_("Delete conversation"))
+            if delete_icon:
+                delete_button.add(Gtk.Image.new_from_icon_name(delete_icon, Gtk.IconSize.MENU))
+            else:
+                delete_button.add(Gtk.Label(label="✕"))
+            # A button click inside a ListBoxRow is consumed by the button
+            # itself, not the row -- confirmed this doesn't also fire
+            # row-activated (which would reload the conversation right
+            # before deleting it).
+            delete_button.connect("clicked", self._on_delete_conversation_clicked, conv["id"])
+            box.pack_start(delete_button, False, False, 0)
+
+            row.add(box)
+            self.conversation_list.add(row)
+            if conv["id"] == self.current_conv_id:
+                selected_row = row
+
+        self.conversation_list.show_all()
+        if selected_row is not None:
+            # select_row() only changes selection state, it does not fire
+            # row-activated -- this highlights the active conversation
+            # without triggering a reload of what's already on screen.
+            self.conversation_list.select_row(selected_row)
+
+    def _on_delete_conversation_clicked(self, _button, conv_id):
+        dialog = Gtk.MessageDialog(
+            transient_for=self,
+            modal=True,
+            message_type=Gtk.MessageType.WARNING,
+            buttons=Gtk.ButtonsType.YES_NO,
+            text=_("Delete this conversation?"),
+        )
+        dialog.format_secondary_text(_("This can't be undone."))
+        response = dialog.run()
+        dialog.destroy()
+        if response != Gtk.ResponseType.YES:
+            return
+
+        _delete_conversation(conv_id)
+        if conv_id == self.current_conv_id:
+            self.on_new_chat()
+        else:
+            self._refresh_conversation_list()
+
+    def on_new_chat(self, *_args):
+        self.current_conv_id = None
+        self.history = []
+        self.conversation_list.unselect_all()
+        self._show_placeholder(_("New conversation. Ask something below."))
+        self.entry.grab_focus()
+
+    def on_conversation_selected(self, _listbox, row):
+        conv_id = getattr(row, "conv_id", None)
+        if conv_id is None or conv_id == self.current_conv_id:
+            return
+        data = _load_conversation(conv_id)
+        if data is None:
+            # File vanished or is corrupt since the sidebar was last built --
+            # drop it rather than show a dead conversation.
+            self._refresh_conversation_list()
+            return
+
+        self.current_conv_id = conv_id
+        self.history = data.get("messages", [])
+        self._clear_chat_box()
+        if not self.history:
+            self._show_placeholder(_("This conversation is empty."))
+        else:
+            for message in self.history:
+                self._add_message(message["content"], is_user=message["role"] == "user")
+        GLib.idle_add(self._scroll_to_bottom)
+
+    def _clear_chat_box(self):
+        for child in self.chat_box.get_children():
+            child.destroy()
+
+    def _show_placeholder(self, text):
+        self._clear_chat_box()
+        label = Gtk.Label(label=text, xalign=0.5)
+        label.get_style_context().add_class("status")
+        self.chat_box.pack_start(label, False, False, 0)
+        label.show()
+        return label
+
+    def _build_header(self):
+        outer = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=14)
+        outer.get_style_context().add_class("header-bar")
+        outer.set_border_width(16)
+
+        sidebar_toggle = self._icon_button(
+            ("sidebar-show-symbolic", "open-menu-symbolic"),
+            "☰",
+            "icon-button",
+            _("Show/hide chat history"),
+        )
+        sidebar_toggle.connect("clicked", self.on_toggle_sidebar)
+        outer.pack_start(sidebar_toggle, False, False, 0)
+
+        if os.path.exists(LOGO_PATH):
+            pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(LOGO_PATH, 40, 40, True)
+            outer.pack_start(Gtk.Image.new_from_pixbuf(pixbuf), False, False, 0)
+
+        text_col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+
+        title = Gtk.Label(label=_("Pacific AI Assistant"), xalign=0)
+        title.get_style_context().add_class("title")
+        text_col.pack_start(title, False, False, 0)
+
+        disclaimer = Gtk.Label(
+            label=_(
+                "Offline, best-effort. Answers and translations may be "
+                "inaccurate -- use Disaster Readiness / Services Directory "
+                "for official information."
+            ),
+            xalign=0,
+            wrap=True,
+        )
+        disclaimer.get_style_context().add_class("disclaimer")
+        text_col.pack_start(disclaimer, False, False, 0)
+
+        outer.pack_start(text_col, True, True, 0)
+
+        return outer
+
+    def on_toggle_sidebar(self, *_args):
+        self.sidebar.set_visible(not self.sidebar.get_visible())
+
+    def _build_chat_area(self):
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+
+        self.chat_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        self.chat_box.set_border_width(18)
+        scroller.add(self.chat_box)
+        self.scroller = scroller
+
+        status_column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+
+        self.startup_logo = PulsingLogo(size=48)
+        self.startup_logo.set_halign(Gtk.Align.CENTER)
+        status_column.pack_start(self.startup_logo, False, False, 0)
+
+        self.status_label = Gtk.Label(label=_("Starting the assistant…"), xalign=0.5)
+        self.status_label.get_style_context().add_class("status")
+        status_column.pack_start(self.status_label, False, False, 0)
+
+        # Hidden until a startup attempt actually fails -- lets the user
+        # retry in place instead of having to close and reopen the whole
+        # window (which is what actually fixes a startup timeout, since it
+        # forces a fresh llama-server process after the page cache is warm).
+        self.retry_button = Gtk.Button(label=_("Try again"))
+        self.retry_button.set_halign(Gtk.Align.CENTER)
+        self.retry_button.connect("clicked", self.on_retry_start)
+        self.retry_button.set_no_show_all(True)
+        self.retry_button.hide()
+        status_column.pack_start(self.retry_button, False, False, 0)
+
+        self.chat_box.pack_start(status_column, False, False, 0)
+
+        return scroller
+
+    def _build_input_area(self):
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        row.set_border_width(14)
+
+        self.entry = Gtk.Entry()
+        self.entry.set_placeholder_text(_("Ask something…"))
+        self.entry.set_sensitive(False)
+        self.entry.connect("activate", self.on_send)
+        row.pack_start(self.entry, True, True, 0)
+
+        self.send_button = self._icon_button(
+            ("mail-send-symbolic", "document-send-symbolic", "go-next-symbolic"),
+            "➤",
+            "send-button",
+            _("Send"),
+        )
+        self.send_button.set_sensitive(False)
+        self.send_button.connect("clicked", self.on_send)
+        row.pack_start(self.send_button, False, False, 0)
+
+        return row
+
+    def _start_server_async(self):
+        self._server_starting = True
+        self._server_start_time = time.time()
+        self.retry_button.hide()
+        self.startup_logo.show()
+        GLib.timeout_add(1000, self._tick_starting_label)
+
+        def worker():
+            try:
+                self.server.start()
+                self.server.wait_ready()
+            except AssistantStartupError as exc:
+                # Kill whatever's left of this attempt (e.g. a still-loading
+                # llama-server that just ran out of patience) rather than
+                # leave it running in the background until the window is
+                # closed -- matters now that "Try again" can retry without
+                # closing the window at all.
+                self.server.stop()
+                GLib.idle_add(self._on_server_ready, str(exc))
+                return
+            except Exception as exc:  # noqa: BLE001 -- must never fail silently here
+                self.server.stop()
+                GLib.idle_add(self._on_server_ready, str(exc))
+                return
+            GLib.idle_add(self._on_server_ready, None)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _tick_starting_label(self):
+        """Ticks the "Starting..." label with elapsed seconds so a slow
+        cold-cache model load (see STARTUP_TIMEOUT_SECONDS) doesn't look
+        like the app has frozen for up to a few minutes."""
+        if not self._server_starting:
+            return False
+        elapsed = int(time.time() - self._server_start_time)
+        self.status_label.set_text(_("Starting the assistant… ({elapsed}s)").format(elapsed=elapsed))
+        return True
+
+    def on_retry_start(self, *_args):
+        self._start_server_async()
+
+    def _on_server_ready(self, error):
+        self._server_starting = False
+        self.startup_logo.hide()
+        if error is None:
+            self.status_label.set_text(_("Ready. Ask a question below."))
+            self.retry_button.hide()
+            self.entry.set_sensitive(True)
+            self.send_button.set_sensitive(True)
+            self.new_chat_button.set_sensitive(True)
+            self.conversation_list.set_sensitive(True)
+            self.entry.grab_focus()
+        else:
+            self.status_label.set_text(_("Could not start the assistant: {error}").format(error=error))
+            self.retry_button.show()
+        return False
+
+    def _add_message(self, text, is_user, is_thinking=False):
+        column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+        column.set_halign(Gtk.Align.END if is_user else Gtk.Align.START)
+
+        # .upper() here since GTK's CSS engine doesn't support text-transform
+        # (that's a web-CSS-only property) -- the uppercase styling has to
+        # happen in Python instead.
+        role_text = (_("You") if is_user else _("Assistant")).upper()
+        role = Gtk.Label(label=role_text, xalign=1 if is_user else 0)
+        role.get_style_context().add_class("role-label")
+        role.get_style_context().add_class("role-user" if is_user else "role-assistant")
+        column.pack_start(role, False, False, 0)
+
+        # GtkLabel's own wrap/max-width-chars/size-request mechanisms were
+        # each tried and each failed to reliably stop the window from
+        # growing to fit long replies (confirmed against the real live
+        # session, not just local guessing). Sidestepping the problem
+        # entirely: pre-wrap the text ourselves with literal newlines before
+        # it ever reaches the label, so there is no negotiation for GTK to
+        # get wrong -- the label just displays lines that are already short.
+        label = Gtk.Label(label=_wrap_message_text(text), xalign=0, wrap=True)
+        label.set_selectable(True)
+        label.set_line_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        if is_thinking:
+            label.get_style_context().add_class("message-thinking")
+            # Small pulsing logo next to "Thinking..." -- same heartbeat
+            # widget used on the startup screen, so waiting for a reply and
+            # waiting for the assistant to start read as the same kind of
+            # "working on it" state. Stashed on the label itself so
+            # _on_reply can find and stop it once the real reply lands,
+            # without needing to thread a second reference through on_send.
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            logo = PulsingLogo(size=18)
+            row.pack_start(logo, False, False, 0)
+            row.pack_start(label, False, False, 0)
+            label.pulsing_logo = logo
+            column.pack_start(row, False, False, 0)
+        else:
+            label.get_style_context().add_class("message-user" if is_user else "message-assistant")
+            column.pack_start(label, False, False, 0)
+
+        self.chat_box.pack_start(column, False, False, 0)
+        column.show_all()
+        return label
+
+    def _scroll_to_bottom(self):
+        adj = self.scroller.get_vadjustment()
+        adj.set_value(adj.get_upper())
+        return False
+
+    def on_send(self, *_args):
+        text = self.entry.get_text().strip()
+        if not text:
+            return
+        self.entry.set_text("")
+        self.entry.set_sensitive(False)
+        self.send_button.set_sensitive(False)
+        if not self.history:
+            # First message of a fresh view (either app startup's "Ready"
+            # placeholder or the "New conversation" placeholder) -- clear it
+            # so it doesn't linger above the real conversation.
+            self._clear_chat_box()
+        self._add_message(text, is_user=True)
+        thinking_label = self._add_message(_("Thinking…"), is_user=False, is_thinking=True)
+        GLib.idle_add(self._scroll_to_bottom)
+
+        def worker():
+            try:
+                reply = query_assistant(text, self.history, self._request_approval)
+            except Exception as exc:
+                reply = _("Sorry, something went wrong: {error}").format(error=exc)
+            GLib.idle_add(self._on_reply, text, reply, thinking_label)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _request_approval(self, action_description):
+        """Called from the background worker thread. Blocks that thread
+        (never the GTK main loop) until the user answers a real dialog --
+        every gated action asks every time, no "always allow"."""
+        result = {}
+        done = threading.Event()
+
+        def show_dialog():
+            dialog = Gtk.MessageDialog(
+                transient_for=self,
+                modal=True,
+                message_type=Gtk.MessageType.QUESTION,
+                buttons=Gtk.ButtonsType.YES_NO,
+                text=_("Allow this action?"),
+            )
+            dialog.format_secondary_text(
+                _("The assistant wants to {action}.").format(action=action_description)
+            )
+            response = dialog.run()
+            dialog.destroy()
+            result["allowed"] = response == Gtk.ResponseType.YES
+            done.set()
+            return False
+
+        GLib.idle_add(show_dialog)
+        done.wait(timeout=120)
+        return result.get("allowed", False)
+
+    def _on_reply(self, user_text, reply, thinking_label):
+        pulsing_logo = getattr(thinking_label, "pulsing_logo", None)
+        if pulsing_logo is not None:
+            pulsing_logo.hide()
+        thinking_label.set_text(_wrap_message_text(reply))
+        style = thinking_label.get_style_context()
+        style.remove_class("message-thinking")
+        style.add_class("message-assistant")
+        self.history.append({"role": "user", "content": user_text})
+        self.history.append({"role": "assistant", "content": reply})
+
+        # Persist after every completed turn, not just on switch/close, so a
+        # crash or force-quit never loses more than the in-flight reply (see
+        # the "Conversation persistence" section comment for why one file
+        # per conversation). First reply of a fresh chat mints its id here,
+        # not at chat-start, so quitting without sending anything never
+        # leaves an empty conversation cluttering the sidebar.
+        if self.current_conv_id is None:
+            self.current_conv_id = uuid.uuid4().hex[:12]
+        _save_conversation(self.current_conv_id, _make_title(self.history[0]["content"]), self.history)
+        self._refresh_conversation_list()
+
+        self.entry.set_sensitive(True)
+        self.send_button.set_sensitive(True)
+        self.entry.grab_focus()
+        GLib.idle_add(self._scroll_to_bottom)
+        return False
+
+    def on_destroy(self, *_args):
+        self.server.stop()
+        Gtk.main_quit()
+
+
+def main():
+    provider = Gtk.CssProvider()
+    provider.load_from_data(CSS)
+    Gtk.StyleContext.add_provider_for_screen(
+        Gdk.Screen.get_default(),
+        provider,
+        Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+    )
+
+    win = AssistantWindow()
+    win.show_all()
+    Gtk.main()
+
+
+if __name__ == "__main__":
+    main()

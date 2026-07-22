@@ -18,7 +18,7 @@ lb config \
 That generates the standard live-build tree (`package-lists/`, `includes.chroot/`,
 `hooks/normal/`, `bootloaders/`, etc.). Customizations belong there:
 
-- `package-lists/pacific.list.chroot` — XFCE + the Phase 1 preinstalled app set
+- `package-lists/venu-pacific.list.chroot` — XFCE + the Phase 1 preinstalled app set
 - `includes.chroot/etc/...` — branding, default settings
 - `hooks/normal/` — postinstall scripts (welcome app registration, theming)
 
