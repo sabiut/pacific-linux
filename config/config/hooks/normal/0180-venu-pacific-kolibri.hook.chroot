@@ -1,0 +1,51 @@
+#!/bin/sh
+# Bundles Kolibri (learningequality.org) -- offline-first education
+# platform, the "Learn" pillar the strategic review flagged as the
+# priority gap before v1. MIT licensed, no Debian/apt package exists
+# (confirmed: packages.debian.org has zero hits for "kolibri" across all
+# suites), so this fetches the official upstream .pex release directly --
+# a self-contained portable Python executable that bundles its own
+# dependencies, needing only the system's own python3 (Debian trixie
+# ships 3.12/3.13, well within Kolibri's supported range). Chose the
+# .pex over the .deb Learning Equality also publishes: the .deb is
+# Ubuntu-flavored ("0ubuntuN") and pulls system deps via apt, while the
+# pex is self-contained -- matches this project's existing pattern of
+# fetching a portable upstream artifact directly rather than depending
+# on a third-party apt repo (same reasoning as building llama.cpp from
+# source instead of trusting a PPA).
+#
+# App only, deliberately no content channels bundled -- see ROADMAP.md
+# for why: no Vanuatu/Pacific/Bislama content exists in Kolibri's public
+# catalog at all (checked directly, zero matches across all 173 public
+# channels), and generically-useful channels are too large for the base
+# image regardless (Khan Academy alone runs 38-54GB). Users get content
+# channels the same way they get extra Kiwix ZIMs -- via the offline-
+# content download guide, not baked into the image.
+#
+# Downloaded at build time rather than committed to git (a ~100MB binary
+# doesn't belong in version control). If this exact version 404s in a
+# future rebuild, check https://github.com/learningequality/kolibri/releases
+# for the current release and update the version below.
+set -e
+
+KOLIBRI_VERSION="0.19.5"
+INSTALL_DIR="/opt/venu-pacific/kolibri"
+
+mkdir -p "$INSTALL_DIR"
+wget -q \
+    "https://github.com/learningequality/kolibri/releases/download/v${KOLIBRI_VERSION}/kolibri-${KOLIBRI_VERSION}.pex" \
+    -O "$INSTALL_DIR/kolibri.pex"
+chmod +x "$INSTALL_DIR/kolibri.pex"
+
+# Sanity-checks the download actually works before the build moves on --
+# PEX extracts its bundled dependencies to $PEX_ROOT (default ~/.pex) on
+# first run, confirmed directly: ~274MB, ~4s the first time. Deliberately
+# NOT redirecting PEX_ROOT to a shared location for every user to reuse --
+# tried that and confirmed directly it backfires: PEX needs *write*
+# access to PEX_ROOT even when the content is already fully extracted
+# there, and falls back to a fresh temporary directory (silently
+# re-extracting from scratch on *every* launch, not just the first) the
+# moment it's read-only, which is worse than doing nothing. A shared,
+# world-writable cache would fix that but isn't worth the multi-user
+# permissions complexity for a one-time, per-user, few-second cost.
+"$INSTALL_DIR/kolibri.pex" --version >/dev/null

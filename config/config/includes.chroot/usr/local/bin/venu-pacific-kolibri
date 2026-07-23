@@ -1,0 +1,25 @@
+#!/bin/sh
+# Launches Kolibri (offline courses/learning materials) and opens it in
+# the browser -- Kolibri is itself a local Django web server, same shape
+# as kiwix-serve, not a native GTK app, so this is a start-then-open
+# wrapper rather than a real application.
+#
+# PEX_ROOT and KOLIBRI_HOME are both left at their own defaults
+# (~/.pex and ~/.kolibri) -- per-user, always writable by that user, no
+# permissions complexity. PEX_ROOT extracts its bundled dependencies
+# there on first launch only (~4s, confirmed directly); tried redirecting
+# it to a shared pre-warmed cache and confirmed that backfires (PEX needs
+# write access even to reuse an already-extracted cache, so a read-only
+# shared one causes it to silently re-extract from scratch on *every*
+# launch instead) -- not worth it for a few-second, one-time, per-user
+# cost. See 0180-venu-pacific-kolibri.hook.chroot for the full story.
+set -e
+
+KOLIBRI_BIN="/opt/venu-pacific/kolibri/kolibri.pex"
+KOLIBRI_URL="http://127.0.0.1:8080"
+
+if ! "$KOLIBRI_BIN" status >/dev/null 2>&1; then
+    "$KOLIBRI_BIN" start --background --port 8080
+fi
+
+exec firefox-esr "$KOLIBRI_URL"
