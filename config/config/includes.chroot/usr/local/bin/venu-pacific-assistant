@@ -25,6 +25,7 @@ import glob
 import json
 import math
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -399,6 +400,11 @@ SYSTEM_PROMPT = (
     "by blank lines instead of one long block of text -- this is displayed in a "
     "narrow chat window, so readability matters more than a single flowing "
     "paragraph.\n\n"
+    "For calculations and numbers, write them in plain text only, e.g. "
+    "'48 × 3,750 = 180,000' -- never use LaTeX or markdown math notation "
+    "(no \\text{}, \\times, \\frac{}{}, or $...$ delimiters). The chat display "
+    "cannot render math typesetting, so LaTeX shows up as literal backslashes "
+    "and braces instead of a readable equation.\n\n"
     "Whenever you need to check something you can check (disk space, Wi-Fi, "
     "internet, printers, open windows, active window, the time, battery), "
     "call the matching tool in that same turn. Never say \"let me check\" or "
@@ -1599,6 +1605,33 @@ def _describe_gated_call(name, arguments):
     return describer(arguments) if describer else name
 
 
+def _strip_latex_artifacts(text):
+    """Small local models default to LaTeX math notation (\\text{...},
+    \\times, $...$ delimiters) surprisingly often, even for plain
+    arithmetic -- confirmed in practice on a simple word problem. The chat
+    display is a plain GTK label with no math typesetting, so this shows
+    up as literal backslash-and-brace source text instead of a readable
+    equation. SYSTEM_PROMPT asks the model not to do this; this is the
+    safety net for when it does anyway.
+
+    Only strips "$" when it's immediately followed by whitespace ("$ 48"),
+    never when preceded by whitespace -- that first version briefly also
+    matched ordinary currency like "is $48" (a space before "$" is just
+    normal sentence spacing before a price, not a LaTeX tell; caught this
+    in testing before it shipped). "$ 48" is the reliable signal instead:
+    nobody writes a space *between* "$" and the number for real money. A
+    closing "$ 48 ... 48 $" delimiter is left alone if it isn't followed
+    by whitespace -- an imperfect but safe tradeoff, and the rarer case
+    now that the prompt fix handles this at the source.
+    """
+    text = re.sub(r"\\text\{([^}]*)\}", r"\1", text)
+    text = text.replace(r"\times", "×").replace(r"\cdot", "×").replace(r"\div", "÷")
+    text = re.sub(r"\\\(|\\\)|\\\[|\\\]", "", text)
+    text = re.sub(r"\$(?=\s)", "", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    return text
+
+
 def query_assistant(user_text, history, request_approval):
     # /no_think keeps interactive replies fast -- reasoning mode is useful
     # for the translation post-editing prototype but too slow for chat.
@@ -1637,7 +1670,7 @@ def query_assistant(user_text, history, request_approval):
         message = data["choices"][0]["message"]
         tool_calls = message.get("tool_calls")
         if not tool_calls:
-            return (message.get("content") or "").strip()
+            return _strip_latex_artifacts((message.get("content") or "").strip())
 
         messages.append(message)
         for call in tool_calls:
