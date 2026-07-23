@@ -60,17 +60,26 @@ SERVER_URL = f"http://127.0.0.1:{SERVER_PORT}"
 # change in between) -- widened to give real hardware room without hanging
 # forever if llama-server is actually broken.
 STARTUP_TIMEOUT_SECONDS = 240
-# Per-request timeout for each round-trip to llama-server. 120s was too
-# tight for real hardware: a single round can involve processing a large
-# tool result (e.g. a fetched Kiwix article or search-engine summary) AND
-# generating a multi-paragraph answer, and this project's own benchmarks
-# on constrained hardware showed generation as slow as ~3.6-5 tok/s and
-# prompt processing taking up to ~70s for a ~2000-token context on its
-# own (see ROADMAP.md's Phase 5 build log) -- confirmed hitting this in
-# practice, not theoretical. Widened for the same reason as
-# STARTUP_TIMEOUT_SECONDS above: real donated hardware needs more room,
-# not a tighter deadline.
-LLAMA_REQUEST_TIMEOUT_SECONDS = 300
+# A fixed total-duration timeout is the wrong shape for a chat reply of
+# unknown length on hardware of unknown speed -- confirmed hitting this in
+# practice (a plain "write an essay about X" timed out twice in a row,
+# including on retry). Root cause: llama-server's non-streaming response
+# is a single JSON document that can't be sent until generation is
+# entirely finished, so the client's read blocks on one giant operation
+# for the whole duration -- Python's socket timeout is technically
+# per-operation, but with only one operation to wait on, it behaves
+# exactly like a total-duration timeout regardless of the number chosen.
+#
+# Fixed by streaming every request instead (see _stream_chat_completion):
+# llama-server sends small SSE chunks continuously as tokens generate,
+# plus a heartbeat comment every --sse-ping-interval seconds (default 30,
+# confirmed in source) even during a long stall like prompt processing.
+# That turns the same per-operation socket timeout into a genuine IDLE
+# timeout instead -- a reply can now take as long as it needs, as long as
+# it's still making progress. LLAMA_STREAM_IDLE_TIMEOUT_SECONDS only needs
+# to comfortably exceed the ping interval, not the worst-case total reply
+# time.
+LLAMA_STREAM_IDLE_TIMEOUT_SECONDS = 90
 
 gettext.bindtextdomain("venu-pacific-assistant", "/usr/share/locale")
 gettext.textdomain("venu-pacific-assistant")
@@ -358,6 +367,17 @@ class LlamaServerManager:
                     "--port", str(SERVER_PORT),
                     "--host", "127.0.0.1",
                     "-c", "4096",
+                    # Required for tool-calling as of current llama.cpp --
+                    # confirmed in source (tools/server/server-common.cpp):
+                    # a request with `tools`/`tool_choice` is rejected with
+                    # HTTP 400 ("tools param requires --jinja flag")
+                    # without this. Has been working without it so far only
+                    # because the currently-built binary predates that
+                    # requirement -- the build hook does a fresh, unpinned
+                    # `git clone` of llama.cpp on every rebuild, so the next
+                    # rebuild pulls whatever is current HEAD and would
+                    # otherwise start rejecting every tool call outright.
+                    "--jinja",
                 ],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -1632,7 +1652,116 @@ def _strip_latex_artifacts(text):
     return text
 
 
-def query_assistant(user_text, history, request_approval):
+def _accumulate_tool_call_deltas(tool_calls_state, deltas):
+    """Merges one SSE chunk's tool_calls deltas into tool_calls_state (a
+    dict keyed by index), following llama.cpp's own documented
+    reconstruction algorithm (tools/server/tests/utils.py in the
+    llama.cpp source -- confirmed directly, not assumed from generic
+    OpenAI docs). Each streamed delta for a given index either introduces
+    a new call (id/type, usually the whole function name in one piece,
+    and maybe the first fragment of arguments) or appends more of that
+    same call's arguments as a raw string fragment -- never valid JSON on
+    its own until every fragment for that index has arrived and been
+    concatenated in order.
+    """
+    for delta in deltas:
+        index = delta.get("index", 0)
+        entry = tool_calls_state.setdefault(
+            index, {"id": "", "type": "function", "function": {"name": "", "arguments": ""}}
+        )
+        if delta.get("id"):
+            entry["id"] = delta["id"]
+        if delta.get("type"):
+            entry["type"] = delta["type"]
+        function_delta = delta.get("function") or {}
+        if function_delta.get("name"):
+            entry["function"]["name"] += function_delta["name"]
+        if function_delta.get("arguments"):
+            entry["function"]["arguments"] += function_delta["arguments"]
+
+
+def _stream_chat_completion(payload, on_content_delta=None):
+    """POSTs a chat-completion request with streaming enabled and
+    reconstructs a single message dict from the SSE response, shaped
+    exactly like the non-streaming API's choice.message -- confirmed
+    against llama.cpp's own source (tools/server/server-chat.cpp,
+    server-task.cpp), not assumed. Returns {"role": "assistant",
+    "content": str|None, "tool_calls": [...] (only present if any were
+    streamed)}, so query_assistant's round loop below only needed its
+    transport swapped, not its own logic.
+
+    on_content_delta, if given, is called with the full accumulated
+    content string so far after every content fragment -- lets the caller
+    show a reply growing in place instead of a static "Thinking..." for
+    however long generation takes. Tool-call fragments don't trigger it;
+    there's nothing user-readable to show until they're fully assembled.
+
+    See LLAMA_STREAM_IDLE_TIMEOUT_SECONDS above for why this uses a much
+    shorter timeout than the old single-blocking-read approach could ever
+    safely use, without that meaning less patience for a genuinely slow
+    reply -- it's an idle timeout now, not a total one.
+    """
+    payload = dict(payload, stream=True)
+    req = urllib.request.Request(
+        f"{SERVER_URL}/v1/chat/completions",
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+
+    content_parts = []
+    tool_calls_state = {}
+
+    with urllib.request.urlopen(req, timeout=LLAMA_STREAM_IDLE_TIMEOUT_SECONDS) as resp:
+        for raw_line in resp:
+            line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
+            if not line or line.startswith(":"):
+                # Blank line between SSE events, or a bare ":" comment --
+                # llama-server's --sse-ping-interval keep-alive during a
+                # long stall (e.g. prompt processing before the first
+                # token). Not data, but its arrival is exactly what resets
+                # the idle timeout above during that stall.
+                continue
+            if not line.startswith("data:"):
+                continue
+            data = line[len("data:"):].strip()
+            if data == "[DONE]":
+                break
+            try:
+                chunk = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            choices = chunk.get("choices") or []
+            if not choices:
+                continue
+            delta = choices[0].get("delta") or {}
+
+            piece = delta.get("content")
+            if piece:
+                content_parts.append(piece)
+                if on_content_delta is not None:
+                    on_content_delta("".join(content_parts))
+
+            tool_call_deltas = delta.get("tool_calls")
+            if tool_call_deltas:
+                _accumulate_tool_call_deltas(tool_calls_state, tool_call_deltas)
+
+    message = {"role": "assistant", "content": "".join(content_parts) or None}
+    if tool_calls_state:
+        message["tool_calls"] = [
+            {
+                "id": entry["id"],
+                "type": entry["type"],
+                "function": {
+                    "name": entry["function"]["name"],
+                    "arguments": entry["function"]["arguments"],
+                },
+            }
+            for _index, entry in sorted(tool_calls_state.items())
+        ]
+    return message
+
+
+def query_assistant(user_text, history, request_approval, on_partial_reply=None):
     # /no_think keeps interactive replies fast -- reasoning mode is useful
     # for the translation post-editing prototype but too slow for chat.
     messages = (
@@ -1660,14 +1789,12 @@ def query_assistant(user_text, history, request_approval):
         payload = {"messages": messages, "temperature": 0.3, "max_tokens": 500}
         if not force_final_answer:
             payload["tools"] = TOOLS
-        req = urllib.request.Request(
-            f"{SERVER_URL}/v1/chat/completions",
-            data=json.dumps(payload).encode(),
-            headers={"Content-Type": "application/json"},
-        )
-        with urllib.request.urlopen(req, timeout=LLAMA_REQUEST_TIMEOUT_SECONDS) as resp:
-            data = json.loads(resp.read())
-        message = data["choices"][0]["message"]
+        # Streamed rather than one blocking request -- see
+        # LLAMA_STREAM_IDLE_TIMEOUT_SECONDS above for why. on_partial_reply
+        # is wired to every round, not just the final answer -- a model
+        # that streams a little content alongside/before a tool call
+        # (some do) shows up immediately too, not just the last round.
+        message = _stream_chat_completion(payload, on_content_delta=on_partial_reply)
         tool_calls = message.get("tool_calls")
         if not tool_calls:
             return _strip_latex_artifacts((message.get("content") or "").strip())
@@ -2244,28 +2371,32 @@ class AssistantWindow(Gtk.Window):
 
         def worker():
             is_error = False
+
+            def on_partial(partial_text):
+                GLib.idle_add(self._on_partial_reply, thinking_label, partial_text)
+
             try:
-                reply = query_assistant(text, self.history, self._request_approval)
+                reply = query_assistant(
+                    text, self.history, self._request_approval, on_partial_reply=on_partial
+                )
             except (TimeoutError, socket.timeout):
-                # A single round-trip exceeded LLAMA_REQUEST_TIMEOUT_SECONDS --
-                # real, seen in practice on slower hardware for questions
-                # needing a large tool result (a fetched article, a web
-                # search) processed and answered in one round. Not a crash,
-                # just slower than the budget allows -- say so plainly
-                # rather than surfacing a bare "timed out" exception string.
+                # Streaming turned this into a genuine idle timeout (see
+                # LLAMA_STREAM_IDLE_TIMEOUT_SECONDS) -- this now means the
+                # connection actually stalled with no data at all for that
+                # long, not just "a slow reply", since a slow-but-still-
+                # arriving reply keeps resetting the timer on its own.
                 reply = _(
-                    "Sorry, that's taking longer than expected to answer -- this can happen "
-                    "on slower hardware, especially for questions that need to search offline "
-                    "references or the internet. Try asking again, or try a shorter question."
+                    "Sorry, the assistant stopped responding -- this can happen if "
+                    "llama-server has crashed or hung. Try asking again; if it keeps "
+                    "happening, the assistant may need to be restarted."
                 )
                 is_error = True
             except urllib.error.URLError as exc:
                 if isinstance(exc.reason, (TimeoutError, socket.timeout)):
                     reply = _(
-                        "Sorry, that's taking longer than expected to answer -- this can "
-                        "happen on slower hardware, especially for questions that need to "
-                        "search offline references or the internet. Try asking again, or try "
-                        "a shorter question."
+                        "Sorry, the assistant stopped responding -- this can happen if "
+                        "llama-server has crashed or hung. Try asking again; if it keeps "
+                        "happening, the assistant may need to be restarted."
                     )
                 else:
                     reply = _("Sorry, something went wrong: {error}").format(error=exc)
@@ -2296,6 +2427,21 @@ class AssistantWindow(Gtk.Window):
         GLib.idle_add(show_dialog)
         done.wait(timeout=120)
         return result.get("allowed", False)
+
+    def _on_partial_reply(self, thinking_label, partial_text):
+        """Called (via GLib.idle_add, so already on the main thread) for
+        every streamed content fragment -- grows the reply in place
+        instead of leaving a static "Thinking..." up for however long
+        generation takes. Deliberately not run through
+        _strip_latex_artifacts here -- that regex expects complete LaTeX
+        commands, and matching against a fragment mid-command (e.g. text
+        ending in "\\tex") could produce a wrong or flickering partial
+        result; the final call in _on_reply below does the real cleanup
+        once the full text is in.
+        """
+        thinking_label.set_text(_wrap_message_text(partial_text))
+        self._scroll_to_bottom()
+        return False
 
     def _on_reply(self, user_text, reply, thinking_label, is_error=False):
         pulsing_logo = getattr(thinking_label, "pulsing_logo", None)
