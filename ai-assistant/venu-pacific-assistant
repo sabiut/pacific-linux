@@ -376,7 +376,28 @@ class LlamaServerManager:
                     "-m", MODEL_PATH,
                     "--port", str(SERVER_PORT),
                     "--host", "127.0.0.1",
-                    "-c", "4096",
+                    # 4096 was too small, confirmed live and measured: the
+                    # system prompt (~1,100 tokens) plus all 22 tool
+                    # schemas (~2,400 tokens, sent on EVERY request
+                    # regardless of whether a tool ends up used) is ~3,500
+                    # tokens of *fixed* overhead alone, and both have grown
+                    # substantially over this project's build sessions
+                    # without the context window growing to match. Against
+                    # a 500-token generation reserve, that left ~80 tokens
+                    # for actual conversation history -- explained a real
+                    # "HTTP Error 400: Bad Request" seen live partway
+                    # through an otherwise-ordinary conversation (a plain
+                    # context-overflow rejection, not a tool-specific bug --
+                    # it hit on two completely different tool calls in the
+                    # same conversation once history had grown enough).
+                    # Qwen3-4B natively supports far more than this
+                    # (32K+), and the project's own RAM-headroom findings
+                    # (8GB donated-hardware floor, ~2.4GB model, ~5.7GB
+                    # free measured at the old context size) leave real
+                    # room for a larger KV cache -- worth re-confirming
+                    # during the still-open real-hardware benchmark, not
+                    # yet measured on non-virtualized hardware.
+                    "-c", "16384",
                     # Required for tool-calling as of current llama.cpp --
                     # confirmed in source (tools/server/server-common.cpp):
                     # a request with `tools`/`tool_choice` is rejected with
@@ -2414,11 +2435,28 @@ class AssistantWindow(Gtk.Window):
                     detail = exc.read().decode("utf-8", errors="replace").strip()
                 except Exception:
                     detail = ""
-                reply = _("Sorry, something went wrong: HTTP {code} {reason}{detail}").format(
-                    code=exc.code,
-                    reason=exc.reason,
-                    detail=f" -- {detail}" if detail else "",
-                )
+                # A real, confirmed failure mode (not hypothetical): the
+                # fixed per-request overhead (system prompt + all tool
+                # schemas) plus a long-running conversation's own history
+                # can exceed the context window -- llama-server rejects
+                # this with a 400 whose body mentions the context size, a
+                # distinct and actionable case worth a specific message for
+                # rather than a generic error, since raising the context
+                # window (see LlamaServerManager.start) only pushes the
+                # ceiling out, it doesn't remove it.
+                if "context" in detail.lower() and (
+                    "exceed" in detail.lower() or "size" in detail.lower()
+                ):
+                    reply = _(
+                        "Sorry, this conversation has gotten long enough that the assistant "
+                        "has run out of memory for it. Try starting a New Chat to continue."
+                    )
+                else:
+                    reply = _("Sorry, something went wrong: HTTP {code} {reason}{detail}").format(
+                        code=exc.code,
+                        reason=exc.reason,
+                        detail=f" -- {detail}" if detail else "",
+                    )
                 is_error = True
             except urllib.error.URLError as exc:
                 if isinstance(exc.reason, (TimeoutError, socket.timeout)):
