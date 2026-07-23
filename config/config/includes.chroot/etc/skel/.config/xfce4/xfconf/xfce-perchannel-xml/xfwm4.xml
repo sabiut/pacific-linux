@@ -6,5 +6,16 @@
     <property name="show_frame_shadow" type="bool" value="true"/>
     <property name="show_popup_shadow" type="bool" value="true"/>
     <property name="show_dock_shadow" type="bool" value="true"/>
+    <!-- xpresent rather than the default "auto": auto prefers GL, and
+         xfwm4 4.20 refuses software GL renderers outright ("Unsupported
+         GL renderer (llvmpipe)"), silently leaving compositing off -
+         confirmed live in a VM with no GPU passthrough, where these
+         settings had no visible effect until vblank_mode was switched,
+         at which point shadows/dimming immediately worked. VMs are how
+         most people first try a new distro, and the XPresent path is a
+         legitimate, well-supported backend on real hardware too - it
+         also sidesteps flaky GL drivers on the old donated GPUs this
+         project targets. -->
+    <property name="vblank_mode" type="string" value="xpresent"/>
   </property>
 </channel>
