@@ -79,6 +79,12 @@ window { background-color: #16232b; }
 .title { color: #e9e3d6; font-size: 22px; font-weight: bold; }
 .section-title { color: #e9e3d6; font-size: 14px; font-weight: bold; }
 .body-text { color: #a9b7bd; font-size: 13px; }
+/* The radio buttons below have no class of their own, so without this
+ * their label text falls back to the desktop theme's default label
+ * color -- normally fine, but against this window's custom dark
+ * background it renders as low-contrast dark-on-dark (same root cause
+ * as the button fix below, just for radiobutton instead of button). */
+radiobutton { color: #e9e3d6; }
 /* background-image/box-shadow/border resets are needed because the
  * desktop theme's default button styling paints a gradient over plain
  * background-color -- without these the theme's gradient shows through
