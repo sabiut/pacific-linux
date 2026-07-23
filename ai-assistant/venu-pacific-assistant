@@ -76,10 +76,21 @@ STARTUP_TIMEOUT_SECONDS = 240
 # confirmed in source) even during a long stall like prompt processing.
 # That turns the same per-operation socket timeout into a genuine IDLE
 # timeout instead -- a reply can now take as long as it needs, as long as
-# it's still making progress. LLAMA_STREAM_IDLE_TIMEOUT_SECONDS only needs
-# to comfortably exceed the ping interval, not the worst-case total reply
-# time.
-LLAMA_STREAM_IDLE_TIMEOUT_SECONDS = 90
+# it's still making progress.
+#
+# 300 rather than the original 90: the SSE ping only covers a request
+# that is actively being PROCESSED. Two real windows send zero bytes at
+# all -- no headers, no pings: (1) a request queued behind another on the
+# single slot (confirmed live: the background prefix prewarm plus a user
+# message sent seconds later meant the message sat silently queued for
+# the ~2-minute prefix eval and died at the old 90s), and (2) the
+# sleep-wake model reload, where the login service re-reads the model
+# before the request starts. The prewarm gate below removes the common
+# case of (1), but this budget has to cover whatever silent window
+# remains on genuinely slow hardware. A true crash usually closes the
+# connection (an immediate error, not a timeout), so a generous idle
+# budget costs little in real hang-detection.
+LLAMA_STREAM_IDLE_TIMEOUT_SECONDS = 300
 
 gettext.bindtextdomain("venu-pacific-assistant", "/usr/share/locale")
 gettext.textdomain("venu-pacific-assistant")
@@ -1858,24 +1869,40 @@ def _stream_chat_completion(payload, on_content_delta=None):
     return message
 
 
+# Set (open) whenever no prewarm is in flight. query_assistant waits on
+# this before sending -- confirmed live that letting a user request queue
+# server-side behind the prewarm is NOT harmless as first assumed: a
+# queued request receives zero bytes (no headers, no SSE pings -- those
+# only start once processing begins), so on hardware where the prefix
+# eval outruns the idle timeout, the user's first message dies with
+# "stopped responding" while sitting silently in the queue, killed by
+# the very optimization meant to speed it up. Waiting client-side
+# instead is under our control (no socket timeout applies), and costs
+# nothing extra: the request then reuses the freshly cached prefix, so
+# total wall time is the same as queueing -- minus the error.
+_prewarm_done = threading.Event()
+_prewarm_done.set()
+
+
 def prewarm_prefix():
-    """Best-effort, fire-and-forget: evaluates the fixed system-prompt +
-    tool-schema prefix (~3,500 tokens, ~2 minutes of prompt processing
-    cold at this hardware's speed) into the server's KV cache BEFORE the
-    user sends anything, so their first real message only pays for its
-    own tokens -- the cached prefix is reused via the server's
-    longest-common-prefix matching. Doubles as the wake call when the
-    login-started service is sleeping (any real request triggers its
-    auto-reload; /health deliberately does not).
+    """Best-effort: evaluates the fixed system-prompt + tool-schema
+    prefix (~3,500 tokens, ~2 minutes of prompt processing cold at this
+    hardware's speed) into the server's KV cache BEFORE the user sends
+    anything, so their first real message only pays for its own tokens
+    -- the cached prefix is reused via the server's longest-common-prefix
+    matching. Doubles as the wake call when the login-started service is
+    sleeping (any real request triggers its auto-reload; /health
+    deliberately does not).
 
     Runs on a background thread after the UI is already marked ready --
-    never gates it. If the user sends before this finishes, their
-    request just queues behind it on the single slot, and the prefix
-    work done so far is exactly the work their request needed anyway,
-    so nothing is wasted. Every failure mode here is safe to ignore:
-    a timeout or error only means the first real message pays the
+    never gates the UI, only the actual sending of the first request
+    (see _prewarm_done above). The finally is load-bearing: if this
+    fails in any way, the event must still open or every later request
+    would wait out the full gate timeout for a prewarm that already
+    died. A failed prewarm only means the first real message pays the
     prefix cost itself, which was the status quo.
     """
+    _prewarm_done.clear()
     try:
         _stream_chat_completion(
             {
@@ -1888,9 +1915,18 @@ def prewarm_prefix():
         )
     except Exception:
         pass
+    finally:
+        _prewarm_done.set()
 
 
 def query_assistant(user_text, history, request_approval, on_partial_reply=None):
+    # Hold the request until any in-flight prewarm finishes -- see
+    # _prewarm_done above for why sending immediately is worse, not
+    # better. Bounded so a pathologically stuck prewarm can't wedge the
+    # app forever; after the bound, send anyway and let the request's own
+    # error handling take over.
+    _prewarm_done.wait(timeout=600)
+
     messages = (
         [{"role": "system", "content": SYSTEM_PROMPT}]
         + history
@@ -2447,6 +2483,12 @@ class AssistantWindow(Gtk.Window):
             # Start evaluating the fixed prompt prefix in the background
             # while the user is still reading/typing -- see prewarm_prefix.
             # Deliberately after the UI is marked ready, never gating it.
+            # The gate is closed HERE, synchronously on the main thread,
+            # before the thread starts -- clearing it inside the thread
+            # would leave a window where a fast user send slips past the
+            # gate before the thread gets scheduled, recreating the exact
+            # queued-behind-prewarm timeout this prevents.
+            _prewarm_done.clear()
             threading.Thread(target=prewarm_prefix, daemon=True).start()
         else:
             self.status_label.set_text(_("Could not start the assistant: {error}").format(error=error))
