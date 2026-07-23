@@ -2243,6 +2243,7 @@ class AssistantWindow(Gtk.Window):
         GLib.idle_add(self._scroll_to_bottom)
 
         def worker():
+            is_error = False
             try:
                 reply = query_assistant(text, self.history, self._request_approval)
             except (TimeoutError, socket.timeout):
@@ -2257,6 +2258,7 @@ class AssistantWindow(Gtk.Window):
                     "on slower hardware, especially for questions that need to search offline "
                     "references or the internet. Try asking again, or try a shorter question."
                 )
+                is_error = True
             except urllib.error.URLError as exc:
                 if isinstance(exc.reason, (TimeoutError, socket.timeout)):
                     reply = _(
@@ -2267,9 +2269,11 @@ class AssistantWindow(Gtk.Window):
                     )
                 else:
                     reply = _("Sorry, something went wrong: {error}").format(error=exc)
+                is_error = True
             except Exception as exc:
                 reply = _("Sorry, something went wrong: {error}").format(error=exc)
-            GLib.idle_add(self._on_reply, text, reply, thinking_label)
+                is_error = True
+            GLib.idle_add(self._on_reply, text, reply, thinking_label, is_error)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -2293,7 +2297,7 @@ class AssistantWindow(Gtk.Window):
         done.wait(timeout=120)
         return result.get("allowed", False)
 
-    def _on_reply(self, user_text, reply, thinking_label):
+    def _on_reply(self, user_text, reply, thinking_label, is_error=False):
         pulsing_logo = getattr(thinking_label, "pulsing_logo", None)
         if pulsing_logo is not None:
             pulsing_logo.hide()
@@ -2301,19 +2305,33 @@ class AssistantWindow(Gtk.Window):
         style = thinking_label.get_style_context()
         style.remove_class("message-thinking")
         style.add_class("message-assistant")
-        self.history.append({"role": "user", "content": user_text})
-        self.history.append({"role": "assistant", "content": reply})
 
-        # Persist after every completed turn, not just on switch/close, so a
-        # crash or force-quit never loses more than the in-flight reply (see
-        # the "Conversation persistence" section comment for why one file
-        # per conversation). First reply of a fresh chat mints its id here,
-        # not at chat-start, so quitting without sending anything never
-        # leaves an empty conversation cluttering the sidebar.
-        if self.current_conv_id is None:
-            self.current_conv_id = uuid.uuid4().hex[:12]
-        _save_conversation(self.current_conv_id, _make_title(self.history[0]["content"]), self.history)
-        self._refresh_conversation_list()
+        # A failed turn (timeout, connection error, etc.) stays visible in
+        # the chat transcript above (the bubble is already on screen) but
+        # must NOT be added to history or persisted -- confirmed this was
+        # happening and causing a real, observed follow-on failure: after a
+        # timeout, "Sorry, something went wrong: timed out" was saved as if
+        # it were the assistant's genuine turn, so a follow-up "continue"
+        # sent that fake turn back to the model as real context, with
+        # nothing actual to continue from. Treating a failed exchange as if
+        # it never happened (from the model's point of view) is the correct
+        # fix, not just a longer timeout -- the user's own question stays
+        # visible on screen either way since that bubble doesn't depend on
+        # self.history at all.
+        if not is_error:
+            self.history.append({"role": "user", "content": user_text})
+            self.history.append({"role": "assistant", "content": reply})
+
+            # Persist after every completed turn, not just on switch/close, so a
+            # crash or force-quit never loses more than the in-flight reply (see
+            # the "Conversation persistence" section comment for why one file
+            # per conversation). First reply of a fresh chat mints its id here,
+            # not at chat-start, so quitting without sending anything never
+            # leaves an empty conversation cluttering the sidebar.
+            if self.current_conv_id is None:
+                self.current_conv_id = uuid.uuid4().hex[:12]
+            _save_conversation(self.current_conv_id, _make_title(self.history[0]["content"]), self.history)
+            self._refresh_conversation_list()
 
         self.entry.set_sensitive(True)
         self.send_button.set_sensitive(True)
