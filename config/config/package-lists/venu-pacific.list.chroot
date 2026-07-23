@@ -44,6 +44,13 @@ kiwix-tools
 zim-tools
 python3-bs4
 
+# pdftotext (poppler-utils, <1MB installed) lets the AI assistant extract
+# the text layer from PDF documents for its read_file tool -- school
+# worksheets and government forms are exactly the documents this audience
+# will ask about, and without this a PDF read fed the model raw binary
+# garbage instead of failing cleanly.
+poppler-utils
+
 # Installer (present in the live image so the target machine can install to
 # disk). The `calamares` package is only the framework — with nothing else,
 # there's no /etc/calamares/settings.conf or module sequence, so it can't

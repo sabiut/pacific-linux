@@ -567,6 +567,7 @@ SYSTEM_PROMPT = (
     "that offline.\n\n"
     "You can ONLY do what the available tools let you do: check disk space, "
     "check Wi-Fi status, check internet connectivity, check printer status, "
+    "check the print queue, cancel stuck print jobs, "
     "list open windows, check which window is active, check the current "
     "date/time, check battery status, look up disaster safety info, look up "
     "government/health/education services, list/search/read offline reference "
@@ -575,9 +576,13 @@ SYSTEM_PROMPT = (
     "open window (by its normal close request, giving unsaved work its usual chance "
     "to prompt -- never a forced kill), "
     "open the Wi-Fi settings app, open the printer settings app, read a "
-    "text file in the user's home directory, create or overwrite a text file in "
+    "text file or extract the text of a PDF document in the user's home directory, "
+    "create or overwrite a text file in "
     "the user's home directory, and find files by name pattern in the user's home "
-    "directory. Use list_installed_applications first if you're not sure of an "
+    "directory. When troubleshooting a printer, check both get_printer_status AND "
+    "get_print_queue -- a stuck job in the queue is the most common cause of a "
+    "printer that will not print. "
+    "Use list_installed_applications first if you're not sure of an "
     "app's exact name before calling open_application, and list_open_windows first "
     "if you're not sure of a window's exact name before calling close_window. You "
     "cannot run arbitrary commands, install or remove "
@@ -644,6 +649,35 @@ def tool_get_printer_status():
         return result.stdout.strip() or "No printers are currently configured."
     except Exception as exc:
         return f"Could not check printer status: {exc}"
+
+
+def tool_get_print_queue():
+    # The queue, not just printer state -- a stuck job is the single most
+    # common real-world "printer doesn't print" cause, and without this
+    # the assistant could see the printer was "idle" yet had no way to
+    # see the five jobs wedged in front of the user's document.
+    try:
+        result = subprocess.run(
+            ["lpstat", "-o"], capture_output=True, text=True, timeout=10
+        )
+        return result.stdout.strip() or "The print queue is empty."
+    except Exception as exc:
+        return f"Could not check the print queue: {exc}"
+
+
+def tool_cancel_print_jobs():
+    # `cancel -a` clears all pending jobs on all printers -- the standard
+    # fix for a wedged queue. Gated: it destroys the user's own queued
+    # documents too, so it must never run without an explicit yes.
+    try:
+        result = subprocess.run(
+            ["cancel", "-a"], capture_output=True, text=True, timeout=10
+        )
+        if result.returncode != 0:
+            return f"Could not cancel print jobs: {result.stderr.strip() or 'unknown error'}"
+        return "Cancelled all pending print jobs."
+    except Exception as exc:
+        return f"Could not cancel print jobs: {exc}"
 
 
 def _has_internet_connectivity():
@@ -1179,6 +1213,13 @@ def tool_open_application(name):
 HOME_DIR = os.path.realpath(os.path.expanduser("~"))
 MAX_READ_FILE_BYTES = 100_000
 MAX_FIND_FILE_RESULTS = 50
+# PDFs get their own source-size cap: the 100KB text cap would reject
+# nearly every real PDF (a two-page scanned form is easily 1MB+), and
+# what matters for the model isn't the file size but the extracted TEXT
+# size, capped separately below to fit the context window (~3K tokens).
+MAX_PDF_SOURCE_BYTES = 20_000_000
+MAX_PDF_TEXT_CHARS = 12_000
+PDFTOTEXT_BIN = "/usr/bin/pdftotext"
 
 
 def _resolve_home_path(path):
@@ -1192,11 +1233,45 @@ def _resolve_home_path(path):
     return resolved
 
 
+def _read_pdf(resolved, path):
+    """Extracts a PDF's text layer via pdftotext (poppler-utils). Without
+    this, a PDF went through the plain-text path below and fed the model
+    raw binary garbage -- confirmed by inspection, worse than refusing.
+    PDFs matter for this audience specifically: school worksheets and
+    government forms are exactly what users will ask about."""
+    if not os.path.exists(PDFTOTEXT_BIN):
+        return (
+            f"Cannot read PDF files on this system (pdftotext is not installed): {path}"
+        )
+    size = os.path.getsize(resolved)
+    if size > MAX_PDF_SOURCE_BYTES:
+        return f"PDF is too large to read ({size} bytes, limit {MAX_PDF_SOURCE_BYTES}): {path}"
+    result = subprocess.run(
+        [PDFTOTEXT_BIN, "-layout", resolved, "-"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        return f"Could not extract text from {path}: {result.stderr.strip() or 'pdftotext failed'}"
+    text = result.stdout.strip()
+    if not text:
+        return (
+            f"{path} appears to contain scanned images with no extractable text "
+            "layer. The text cannot be read automatically."
+        )
+    if len(text) > MAX_PDF_TEXT_CHARS:
+        text = text[:MAX_PDF_TEXT_CHARS] + "\n\n[...document truncated...]"
+    return f"Text extracted from {path}:\n\n{text}"
+
+
 def tool_read_file(path):
     try:
         resolved = _resolve_home_path(path)
         if not os.path.isfile(resolved):
             return f"No such file: {path}"
+        if resolved.lower().endswith(".pdf"):
+            return _read_pdf(resolved, path)
         size = os.path.getsize(resolved)
         if size > MAX_READ_FILE_BYTES:
             return f"File is too large to read ({size} bytes, limit {MAX_READ_FILE_BYTES}): {path}"
@@ -1341,6 +1416,33 @@ TOOL_REGISTRY = [
         "handler": tool_get_printer_status,
         "schema": {
             "description": "List configured printers and whether they are ready, idle, or have an error.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "name": "get_print_queue",
+        "tier": "auto",
+        "handler": tool_get_print_queue,
+        "schema": {
+            "description": (
+                "List documents currently waiting in the print queue. Check this "
+                "when troubleshooting printing problems: a stuck job blocking the "
+                "queue is the most common reason a printer stops printing."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "name": "cancel_print_jobs",
+        "tier": "gated",
+        "handler": tool_cancel_print_jobs,
+        "describe": lambda arguments: _("cancel all pending print jobs"),
+        "schema": {
+            "description": (
+                "Cancel ALL documents waiting in the print queue, on all printers. "
+                "The standard fix for a stuck queue. This also removes the user's "
+                "own queued documents, so it requires their approval."
+            ),
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
@@ -1611,16 +1713,17 @@ TOOL_REGISTRY = [
         "describe": _describe_read_file,
         "schema": {
             "description": (
-                "Read the contents of a text file in the user's home directory. "
-                "Requires user approval since it exposes file contents to the "
-                "assistant."
+                "Read the contents of a text file, or extract the text from a PDF "
+                "document, in the user's home directory. Use this to summarize or "
+                "answer questions about a document the user names. Requires user "
+                "approval since it exposes file contents to the assistant."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Path to the file, relative to or within the home directory.",
+                        "description": "Path to the file (text or .pdf), relative to or within the home directory.",
                     }
                 },
                 "required": ["path"],
