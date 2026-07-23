@@ -88,7 +88,7 @@ def _load_countries():
 
 class ServicesDirectoryWindow(Gtk.Window):
     def __init__(self, countries):
-        super().__init__(title=_("Venu Pacific — Services Directory"))
+        super().__init__(title=_("Venu Pacific Services Directory"))
         self.countries = countries
         self.set_default_size(640, 700)
         self.set_position(Gtk.WindowPosition.CENTER)
@@ -106,7 +106,7 @@ class ServicesDirectoryWindow(Gtk.Window):
         scroller.add(self.content_box)
         outer.pack_start(scroller, True, True, 0)
 
-        footer = Gtk.Label(label=_("VENU PACIFIC — OFFLINE FIRST"), xalign=0.5)
+        footer = Gtk.Label(label=_("VENU PACIFIC · OFFLINE FIRST"), xalign=0.5)
         footer.get_style_context().add_class("footer-text")
         footer.set_margin_top(6)
         footer.set_margin_bottom(10)

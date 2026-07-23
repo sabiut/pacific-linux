@@ -2,7 +2,7 @@
 Type=Application
 Name=Vikidia (Kids' Encyclopedia)
 GenericName=Offline encyclopedia for children
-Comment=Wikipedia-style encyclopedia written for children ages 8-13 -- works with no internet connection, no download needed
+Comment=Wikipedia-style encyclopedia written for children ages 8-13. Works with no internet connection, no download needed
 Exec=kiwix-desktop /usr/share/venu-pacific/kiwix-content/vikidia.zim
 Icon=kiwix-desktop
 Terminal=false

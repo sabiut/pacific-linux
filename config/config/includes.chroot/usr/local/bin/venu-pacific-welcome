@@ -115,8 +115,8 @@ def _highlights():
         (
             "Kiwix",
             _(
-                "Offline Wikipedia and Pacific health/agriculture/disaster info "
-                "— works with no internet connection"
+                "Offline Wikipedia and Pacific health/agriculture/disaster info. "
+                "Works with no internet connection"
             ),
         ),
         ("Synaptic", _("Install or remove software")),
@@ -172,7 +172,7 @@ class WelcomeWindow(Gtk.Window):
 
         intro = Gtk.Label(
             label=_(
-                "A Debian-based desktop built for the Pacific Islands region — "
+                "A Debian-based desktop built for the Pacific Islands region, "
                 "designed for real conditions here: limited bandwidth, older "
                 "hardware, and routine cyclone/tsunami/earthquake exposure."
             ),

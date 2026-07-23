@@ -23,7 +23,7 @@ msgstr ""
 "Content-Transfer-Encoding: 8bit\n"
 
 #: services-directory/venu-pacific-services-directory:71
-msgid "Venu Pacific — Services Directory"
+msgid "Venu Pacific Services Directory"
 msgstr ""
 
 #: services-directory/venu-pacific-services-directory:108

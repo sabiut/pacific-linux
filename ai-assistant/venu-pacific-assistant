@@ -721,7 +721,7 @@ def tool_search_internet(query):
             extract = extract[:MAX_INTERNET_RESULT_CHARS] + "\n\n[...truncated...]"
         page_url = summary_data.get("content_urls", {}).get("desktop", {}).get("page", "")
         source_line = f"\n\nSource: {page_url}" if page_url else ""
-        return f"From the internet (Wikipedia) -- '{title}':\n\n{extract}{source_line}"
+        return f"From the internet (Wikipedia), article '{title}':\n\n{extract}{source_line}"
     except Exception as exc:
         return f"Could not search the internet: {exc}"
 
@@ -734,7 +734,7 @@ def tool_get_current_datetime():
 def tool_get_battery_status():
     battery_dirs = glob.glob("/sys/class/power_supply/BAT*")
     if not battery_dirs:
-        return "No battery detected -- this looks like a desktop machine or the battery isn't reported."
+        return "No battery detected. This looks like a desktop machine, or the battery isn't reported."
     try:
         battery = battery_dirs[0]
         with open(os.path.join(battery, "capacity")) as f:
@@ -963,7 +963,7 @@ def tool_search_offline_encyclopedia(query, collection=None):
     if not all_results:
         return f"No articles found for '{query}'."
     return (
-        "Matching articles -- use get_encyclopedia_article with the exact title AND "
+        "Matching articles. Use get_encyclopedia_article with the exact title AND "
         "collection name to read one:\n" + "\n".join(all_results[:10])
     )
 
@@ -2042,7 +2042,7 @@ class PulsingLogo(Gtk.Image):
 
 class AssistantWindow(Gtk.Window):
     def __init__(self):
-        super().__init__(title=_("Venu Pacific — AI Assistant"))
+        super().__init__(title=_("Venu Pacific AI Assistant"))
         # Wider than before to make room for the chat-history sidebar
         # alongside the chat area, not instead of it.
         self.set_default_size(880, 640)
@@ -2313,14 +2313,14 @@ class AssistantWindow(Gtk.Window):
 
         text_col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
 
-        title = Gtk.Label(label=_("Venu Pacific — AI Assistant"), xalign=0)
+        title = Gtk.Label(label=_("Venu Pacific AI Assistant"), xalign=0)
         title.get_style_context().add_class("title")
         text_col.pack_start(title, False, False, 0)
 
         disclaimer = Gtk.Label(
             label=_(
                 "Offline, best-effort. Answers and translations may be "
-                "inaccurate -- use Disaster Readiness / Services Directory "
+                "inaccurate. Use Disaster Readiness or Services Directory "
                 "for official information."
             ),
             xalign=0,
@@ -2536,7 +2536,7 @@ class AssistantWindow(Gtk.Window):
                 # long, not just "a slow reply", since a slow-but-still-
                 # arriving reply keeps resetting the timer on its own.
                 reply = _(
-                    "Sorry, the assistant stopped responding -- this can happen if "
+                    "Sorry, the assistant stopped responding. This can happen if "
                     "llama-server has crashed or hung. Try asking again; if it keeps "
                     "happening, the assistant may need to be restarted."
                 )
@@ -2579,7 +2579,7 @@ class AssistantWindow(Gtk.Window):
             except urllib.error.URLError as exc:
                 if isinstance(exc.reason, (TimeoutError, socket.timeout)):
                     reply = _(
-                        "Sorry, the assistant stopped responding -- this can happen if "
+                        "Sorry, the assistant stopped responding. This can happen if "
                         "llama-server has crashed or hung. Try asking again; if it keeps "
                         "happening, the assistant may need to be restarted."
                     )

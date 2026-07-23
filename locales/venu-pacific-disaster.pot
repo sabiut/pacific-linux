@@ -23,7 +23,7 @@ msgstr ""
 "Content-Transfer-Encoding: 8bit\n"
 
 #: disaster-info/venu-pacific-disaster-info:72
-msgid "Venu Pacific — Disaster Readiness"
+msgid "Venu Pacific Disaster Readiness"
 msgstr ""
 
 #: disaster-info/venu-pacific-disaster-info:109

@@ -28,7 +28,7 @@ msgstr "Welkam"
 
 #: welcome-app/venu-pacific-welcome:124
 msgid ""
-"A Debian-based desktop built for the Pacific Islands region — designed for "
+"A Debian-based desktop built for the Pacific Islands region, designed for "
 "real conditions here: limited bandwidth, older hardware, and routine "
 "cyclone/tsunami/earthquake exposure."
 msgstr ""
@@ -67,7 +67,7 @@ msgstr "Editim ol imej"
 
 #: welcome-app/venu-pacific-welcome:70
 msgid ""
-"Offline Wikipedia and Pacific health/agriculture/disaster info — works "
+"Offline Wikipedia and Pacific health/agriculture/disaster info. Works "
 "with no internet connection"
 msgstr ""
 "Wikipedia we i no nidim intanet, mo infomesen long helt, fam, mo disasta "
