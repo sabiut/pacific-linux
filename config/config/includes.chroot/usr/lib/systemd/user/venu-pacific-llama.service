@@ -1,0 +1,46 @@
+[Unit]
+Description=Venu Pacific AI assistant model server (llama-server)
+
+[Service]
+# Started at login so the ~2.4GB model's cold disk read (which llama.cpp
+# does synchronously and unavoidably at startup -- MAP_POPULATE is
+# hardcoded) happens in the background before the user ever opens the
+# assistant window, instead of while they watch a spinner. Nice/idle IO
+# scheduling so this background load never fights the desktop or boot.
+#
+# --sleep-idle-seconds is what makes a resident server compatible with
+# this project's zero-idle-RAM principle: after 10 idle minutes the
+# server frees the model AND KV cache, keeping only a tiny process bound
+# to the port; the next request auto-reloads (fast if the page cache
+# still holds the model file). Requires the pinned llama.cpp build --
+# see 0170-venu-pacific-ai-assistant.hook.chroot for the pin.
+#
+# -c 8192 rather than 16384: KV is allocated AND zeroed eagerly at
+# startup (committed RAM whether used or not) -- at 16384 that was
+# ~2.3GiB f16, enough on an 8GB machine to evict the model file from
+# the page cache, making the server its own reason later starts were
+# cold. 8192 + q8_0 KV is ~0.6GiB. The assistant client detects
+# context-overflow and tells the user to start a new chat, so long
+# conversations degrade with a clear message, not a crash.
+#
+# Remaining flags match the assistant's own fallback spawn -- keep the
+# two argument lists in sync (venu-pacific-assistant, LlamaServerManager).
+ExecStart=/opt/venu-pacific/llama.cpp/bin/llama-server \
+    -m /usr/share/venu-pacific/models/Qwen3-4B-Q4_K_M.gguf \
+    --port 8149 \
+    --host 127.0.0.1 \
+    -c 8192 \
+    --jinja \
+    -np 1 \
+    --cache-reuse 256 \
+    -fa on \
+    -ctk q8_0 \
+    -ctv q8_0 \
+    --sleep-idle-seconds 600
+Nice=10
+IOSchedulingClass=idle
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

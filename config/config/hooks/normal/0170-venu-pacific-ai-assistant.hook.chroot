@@ -84,3 +84,13 @@ rm -rf "$BUILD_DIR"
 apt-get purge -y -qq cmake build-essential git libssl-dev patchelf
 apt-get autoremove -y -qq
 apt-get install -y -qq --no-install-recommends libssl3 libgomp1 zlib1g libzstd1
+
+echo "=== Enabling the login-time model server (user service) ==="
+# Same --global pattern as venu-pacific-notify-updates.timer (see
+# 0130-venu-pacific-update-timers.hook.chroot). The service starts
+# llama-server in the background at login so the model's cold disk read
+# happens before the user opens the assistant, and sleeps (frees model +
+# KV RAM) after 10 idle minutes -- see the unit file itself for the full
+# reasoning. The assistant app connects to it when present and falls
+# back to spawning its own server if not.
+systemctl --global enable venu-pacific-llama.service

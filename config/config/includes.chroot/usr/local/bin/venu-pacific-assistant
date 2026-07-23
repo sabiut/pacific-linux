@@ -341,15 +341,39 @@ class AssistantStartupError(Exception):
     if llama-server failed to launch for any reason)."""
 
 
+def _server_port_responds():
+    """True if ANYTHING answers HTTP on the server port -- a 200, or a 503
+    while a login-started service is still loading the model. Either way
+    a server exists and this app must not spawn a second one on the same
+    port; only connection-refused means nothing is there."""
+    try:
+        urllib.request.urlopen(f"{SERVER_URL}/health", timeout=2)
+        return True
+    except urllib.error.HTTPError:
+        return True
+    except Exception:
+        return False
+
+
 class LlamaServerManager:
-    """Starts/stops the llama-server subprocess on demand -- not resident
-    from boot, so idle RAM stays free on constrained hardware."""
+    """Connects to the login-started model server when one exists
+    (venu-pacific-llama.service -- started at session login so the
+    model's slow cold disk read happens in the background before the
+    user ever opens this window, and sleeps/frees its RAM after 10 idle
+    minutes). Falls back to spawning llama-server itself when the
+    service isn't there (service disabled, failed, or running the app
+    outside the shipped image) -- in which case this keeps the original
+    on-demand lifecycle: spawned here, killed when the window closes."""
 
     def __init__(self):
         self.process = None
+        self.external = False
 
     def start(self):
-        if self.process is not None:
+        if self.process is not None or self.external:
+            return
+        if _server_port_responds():
+            self.external = True
             return
         if not os.path.exists(LLAMA_SERVER_BIN):
             raise AssistantStartupError(
@@ -376,28 +400,25 @@ class LlamaServerManager:
                     "-m", MODEL_PATH,
                     "--port", str(SERVER_PORT),
                     "--host", "127.0.0.1",
-                    # 4096 was too small, confirmed live and measured: the
-                    # system prompt (~1,100 tokens) plus all 22 tool
-                    # schemas (~2,400 tokens, sent on EVERY request
-                    # regardless of whether a tool ends up used) is ~3,500
-                    # tokens of *fixed* overhead alone, and both have grown
-                    # substantially over this project's build sessions
-                    # without the context window growing to match. Against
-                    # a 500-token generation reserve, that left ~80 tokens
-                    # for actual conversation history -- explained a real
-                    # "HTTP Error 400: Bad Request" seen live partway
-                    # through an otherwise-ordinary conversation (a plain
-                    # context-overflow rejection, not a tool-specific bug --
-                    # it hit on two completely different tool calls in the
-                    # same conversation once history had grown enough).
-                    # Qwen3-4B natively supports far more than this
-                    # (32K+), and the project's own RAM-headroom findings
-                    # (8GB donated-hardware floor, ~2.4GB model, ~5.7GB
-                    # free measured at the old context size) leave real
-                    # room for a larger KV cache -- worth re-confirming
-                    # during the still-open real-hardware benchmark, not
-                    # yet measured on non-virtualized hardware.
-                    "-c", "16384",
+                    # 8192, a deliberate middle. 4096 was too small,
+                    # confirmed live: ~3,500 tokens of fixed overhead
+                    # (system prompt + all tool schemas, sent on every
+                    # request) plus a 500-token generation reserve left
+                    # ~80 tokens for conversation history, causing real
+                    # context-overflow 400s mid-conversation. But the
+                    # 16384 this was first raised to had its own measured
+                    # cost: llama-server allocates AND zeroes the whole KV
+                    # cache eagerly at startup (committed RAM whether used
+                    # or not) -- ~2.3GiB f16 at 16384, enough on an 8GB
+                    # machine to evict the model file from the page cache
+                    # and make later cold starts slower. 8192 with the
+                    # q8_0 KV quantization below is ~0.6GiB, leaves ~4,200
+                    # tokens of real history room, and the client already
+                    # detects overflow and tells the user to start a new
+                    # chat, so very long conversations degrade with a
+                    # clear message rather than a crash. Keep in sync with
+                    # venu-pacific-llama.service (same argument list).
+                    "-c", "8192",
                     # Required for tool-calling as of current llama.cpp --
                     # confirmed in source (tools/server/server-common.cpp):
                     # a request with `tools`/`tool_choice` is rejected with
@@ -457,7 +478,11 @@ class LlamaServerManager:
     def wait_ready(self, timeout=STARTUP_TIMEOUT_SECONDS):
         deadline = time.time() + timeout
         while time.time() < deadline:
-            if self.process.poll() is not None:
+            # self.process is None when connected to the login-started
+            # service (nothing of ours to crash-check) -- health polling
+            # below covers it either way, including the case where that
+            # service is still mid-load and answering 503.
+            if self.process is not None and self.process.poll() is not None:
                 raise AssistantStartupError(
                     _("llama-server exited unexpectedly (code {code}).").format(
                         code=self.process.returncode
@@ -471,6 +496,11 @@ class LlamaServerManager:
         raise AssistantStartupError(_("Timed out waiting for the assistant to start."))
 
     def stop(self):
+        # Only ever stops a server this app spawned itself. The
+        # login-started service manages its own lifecycle (sleeps and
+        # frees its RAM after idle) -- killing it here would throw away
+        # the warm model/KV state that makes the next app open instant,
+        # exactly the thing the service exists to provide.
         if self.process is None:
             return
         self.process.terminate()
@@ -1828,6 +1858,38 @@ def _stream_chat_completion(payload, on_content_delta=None):
     return message
 
 
+def prewarm_prefix():
+    """Best-effort, fire-and-forget: evaluates the fixed system-prompt +
+    tool-schema prefix (~3,500 tokens, ~2 minutes of prompt processing
+    cold at this hardware's speed) into the server's KV cache BEFORE the
+    user sends anything, so their first real message only pays for its
+    own tokens -- the cached prefix is reused via the server's
+    longest-common-prefix matching. Doubles as the wake call when the
+    login-started service is sleeping (any real request triggers its
+    auto-reload; /health deliberately does not).
+
+    Runs on a background thread after the UI is already marked ready --
+    never gates it. If the user sends before this finishes, their
+    request just queues behind it on the single slot, and the prefix
+    work done so far is exactly the work their request needed anyway,
+    so nothing is wasted. Every failure mode here is safe to ignore:
+    a timeout or error only means the first real message pays the
+    prefix cost itself, which was the status quo.
+    """
+    try:
+        _stream_chat_completion(
+            {
+                "messages": [{"role": "system", "content": SYSTEM_PROMPT}],
+                "tools": TOOLS,
+                "temperature": 0.3,
+                "max_tokens": 1,
+                "chat_template_kwargs": {"enable_thinking": False},
+            }
+        )
+    except Exception:
+        pass
+
+
 def query_assistant(user_text, history, request_approval, on_partial_reply=None):
     messages = (
         [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -2382,6 +2444,10 @@ class AssistantWindow(Gtk.Window):
             self.new_chat_button.set_sensitive(True)
             self.conversation_list.set_sensitive(True)
             self.entry.grab_focus()
+            # Start evaluating the fixed prompt prefix in the background
+            # while the user is still reading/typing -- see prewarm_prefix.
+            # Deliberately after the UI is marked ready, never gating it.
+            threading.Thread(target=prewarm_prefix, daemon=True).start()
         else:
             self.status_label.set_text(_("Could not start the assistant: {error}").format(error=error))
             self.retry_button.show()
