@@ -37,8 +37,17 @@ apt-get update -qq
 apt-get install -y -qq --no-install-recommends cmake build-essential git libssl-dev patchelf
 
 echo "=== Cloning llama.cpp (ggml-org/llama.cpp, canonical repo) ==="
+# Pinned to a release tag, not master. An unpinned clone means every image
+# rebuild silently pulls whatever llama.cpp is that day -- and its server
+# flags/defaults have churned heavily in recent months (--parallel default
+# changed to auto/4-slots-unified-KV, --jinja became required for tools,
+# --no-mmap/--mlock deprecated into --load-mode, --defrag-thold became a
+# no-op, context-shift default flipped off). The assistant's startup flags
+# are chosen against THIS version's semantics; bump the pin deliberately
+# and re-validate those flags together, not by accident at build time.
+LLAMA_CPP_TAG="b10094"
 rm -rf "$BUILD_DIR"
-git clone --depth 1 https://github.com/ggml-org/llama.cpp.git "$BUILD_DIR"
+git clone --depth 1 --branch "$LLAMA_CPP_TAG" https://github.com/ggml-org/llama.cpp.git "$BUILD_DIR"
 
 echo "=== Building (portable AND fast -- multi-variant CPU dispatch, see comment above) ==="
 cmake -S "$BUILD_DIR" -B "$BUILD_DIR/build" \
