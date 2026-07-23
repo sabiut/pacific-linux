@@ -36,18 +36,38 @@ _ = gettext.gettext
 
 CSS = b"""
 window { background-color: #16232b; }
+/* Shared design language with the Hub (hub/venu-pacific-hub): gradient
+   header, card sections with soft hover transitions, monospace footer.
+   Keep visual changes in step across the three apps. */
+.header-area {
+    background-image: linear-gradient(to bottom, #101a21, #16232b);
+}
 .eyebrow {
     color: #4fb6ad;
     font-family: monospace;
     font-size: 11px;
     letter-spacing: 2px;
 }
-.title { color: #e9e3d6; font-size: 22px; font-weight: bold; }
+.title { color: #e9e3d6; font-size: 20px; font-weight: bold; }
 .section-title { color: #e9e3d6; font-size: 14px; font-weight: bold; }
 .body-text { color: #a9b7bd; font-size: 13px; }
 .item-name { color: #ffffff; font-weight: bold; font-size: 13px; }
 .item-contact { color: #4fb6ad; font-size: 12px; }
 .source-text { color: #6b7880; font-size: 11px; }
+.footer-text {
+    color: #4a5a63;
+    font-family: monospace;
+    font-size: 10px;
+    letter-spacing: 1px;
+}
+.card {
+    background-color: #1c2b34;
+    border: 1px solid #2f4650;
+    border-radius: 12px;
+    padding: 14px;
+    transition: background-color 150ms ease;
+}
+.card:hover { background-color: #22333d; }
 expander { color: #e9e3d6; font-weight: bold; }
 """
 
@@ -86,6 +106,12 @@ class ServicesDirectoryWindow(Gtk.Window):
         scroller.add(self.content_box)
         outer.pack_start(scroller, True, True, 0)
 
+        footer = Gtk.Label(label=_("VENU PACIFIC — OFFLINE FIRST"), xalign=0.5)
+        footer.get_style_context().add_class("footer-text")
+        footer.set_margin_top(6)
+        footer.set_margin_bottom(10)
+        outer.pack_start(footer, False, False, 0)
+
         if self.countries:
             self._show_country(next(iter(self.countries)))
         else:
@@ -93,13 +119,16 @@ class ServicesDirectoryWindow(Gtk.Window):
 
     def _build_header(self):
         header = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        header.set_border_width(28)
+        header.get_style_context().add_class("header-area")
+        header.set_border_width(26)
 
         if os.path.exists(LOGO_PATH):
             pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(
-                LOGO_PATH, 56, 56, True
+                LOGO_PATH, 64, 64, True
             )
-            header.pack_start(Gtk.Image.new_from_pixbuf(pixbuf), False, False, 0)
+            image = Gtk.Image.new_from_pixbuf(pixbuf)
+            image.set_halign(Gtk.Align.CENTER)
+            header.pack_start(image, False, False, 0)
 
         eyebrow = Gtk.Label(label="VENU PACIFIC", xalign=0.5)
         eyebrow.get_style_context().add_class("eyebrow")
@@ -157,6 +186,11 @@ class ServicesDirectoryWindow(Gtk.Window):
         self.content_box.show_all()
 
     def _build_category_section(self, category):
+        # Each category expander sits inside a card so collapsed sections
+        # read as tappable units, matching the Hub's tile language.
+        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        card.get_style_context().add_class("card")
+
         expander = Gtk.Expander(label=category["label"])
         expander.set_expanded(False)
 
@@ -192,10 +226,12 @@ class ServicesDirectoryWindow(Gtk.Window):
             inner.pack_start(item_box, False, False, 0)
 
         expander.add(inner)
-        return expander
+        card.pack_start(expander, False, False, 0)
+        return card
 
     def _build_sources_section(self, sources):
         section = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        section.get_style_context().add_class("card")
         title = Gtk.Label(label=_("Sources"), xalign=0)
         title.get_style_context().add_class("section-title")
         section.pack_start(title, False, False, 0)
