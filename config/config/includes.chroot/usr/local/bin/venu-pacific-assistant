@@ -437,13 +437,16 @@ SYSTEM_PROMPT = (
     "date/time, check battery status, look up disaster safety info, look up "
     "government/health/education services, list/search/read offline reference "
     "collections, search the internet for general knowledge as a last resort, "
-    "list installed applications, open an installed application, "
+    "list installed applications, open an installed application, close a specific "
+    "open window (by its normal close request, giving unsaved work its usual chance "
+    "to prompt -- never a forced kill), "
     "open the Wi-Fi settings app, open the printer settings app, read a "
     "text file in the user's home directory, create or overwrite a text file in "
     "the user's home directory, and find files by name pattern in the user's home "
     "directory. Use list_installed_applications first if you're not sure of an "
-    "app's exact name before calling open_application. You "
-    "cannot close windows, run arbitrary commands, install or remove "
+    "app's exact name before calling open_application, and list_open_windows first "
+    "if you're not sure of a window's exact name before calling close_window. You "
+    "cannot run arbitrary commands, install or remove "
     "anything, delete files, directly add or configure a printer, change network "
     "settings, access files outside the home directory, or "
     "change settings directly. If asked to do something outside this list, "
@@ -927,6 +930,51 @@ def tool_list_open_windows():
     return "Open windows: " + ", ".join(names) if names else "No open windows detected."
 
 
+def tool_close_window(name):
+    # Same main-thread requirement as tool_list_open_windows above -- Wnck
+    # calls (including .close()) must happen on the GTK main loop.
+    result = {}
+    done = threading.Event()
+
+    def do_it():
+        try:
+            screen = Wnck.Screen.get_default()
+            windows = {w.get_name(): w for w in screen.get_windows() if w.get_name()}
+            key = (name or "").strip().lower()
+            match = next((w for n, w in windows.items() if n.lower() == key), None)
+            if match is None:
+                candidates = [n for n in windows if key and key in n.lower()]
+                if len(candidates) == 1:
+                    match = windows[candidates[0]]
+                elif len(candidates) > 1:
+                    result["error"] = (
+                        f"multiple windows match '{name}': {', '.join(candidates)}. "
+                        "Be more specific."
+                    )
+                else:
+                    result["error"] = f"no open window found matching '{name}'."
+            if match is not None:
+                # 0 = X11's CurrentTime convention -- there's no real GTK
+                # event to pull a timestamp from here since this runs via
+                # GLib.idle_add, not an event handler. Sends the window's
+                # own close protocol (WM_DELETE_WINDOW), same as clicking
+                # its titlebar close button -- not a forced kill, so an app
+                # with unsaved work gets its normal chance to prompt/refuse.
+                match.close(0)
+                result["closed"] = match.get_name()
+        except Exception as exc:
+            result["error"] = str(exc)
+        done.set()
+        return False
+
+    GLib.idle_add(do_it)
+    done.wait(timeout=10)
+
+    if "closed" in result:
+        return f"Closed the window '{result['closed']}'."
+    return f"Could not close window: {result.get('error', 'unknown error')}"
+
+
 def tool_open_wifi_settings():
     subprocess.Popen(["nm-connection-editor"])
     return "Opened the Wi-Fi/network connection settings."
@@ -1120,6 +1168,10 @@ def _describe_write_file(arguments):
 
 def _describe_open_application(arguments):
     return _("open the application '{name}'").format(name=arguments.get("name", "?"))
+
+
+def _describe_close_window(arguments):
+    return _("close the window '{name}'").format(name=arguments.get("name", "?"))
 
 
 def _describe_find_file(arguments):
@@ -1387,6 +1439,31 @@ TOOL_REGISTRY = [
                     "name": {
                         "type": "string",
                         "description": "The application's display name, as shown by list_installed_applications.",
+                    }
+                },
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "name": "close_window",
+        "tier": "gated",
+        "handler": tool_close_window,
+        "describe": _describe_close_window,
+        "schema": {
+            "description": (
+                "Close a specific open window by name. Use list_open_windows first if "
+                "you're not sure of the exact name. Sends the window's normal close "
+                "request (like clicking its titlebar close button), so an application "
+                "with unsaved work gets its usual chance to prompt before closing -- "
+                "this does not force-kill anything. Requires user approval."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "The window's name/title, as shown by list_open_windows.",
                     }
                 },
                 "required": ["name"],
