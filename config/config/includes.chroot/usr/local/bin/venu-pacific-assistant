@@ -179,6 +179,50 @@ button.delete-button {
     padding: 4px;
 }
 button.delete-button:hover { color: #e07a5f; }
+/* Confirmation dialogs (tool-approval, delete-conversation) build their own
+   content area rather than using GtkMessageDialog's built-in layout -- the
+   default theme's dialog chrome doesn't reliably pick up this app's dark
+   palette (the message/action areas are separate internal nodes from the
+   plain "window" selector everything else here relies on), and a stock
+   light-grey system dialog stood out jarringly against the rest of the UI
+   anyway. Background-color set explicitly on .dialog-box rather than
+   trusting inheritance, for the same reason. */
+window.themed-dialog { background-color: #16232b; }
+.dialog-box { background-color: #16232b; }
+.dialog-heading { color: #e9e3d6; font-size: 16px; font-weight: bold; }
+.dialog-body { color: #a9b7bd; font-size: 13px; }
+button.dialog-cancel {
+    background-color: transparent;
+    background-image: none;
+    box-shadow: none;
+    border: 1px solid #2f4650;
+    color: #d7dee1;
+    border-radius: 6px;
+    padding: 8px 18px;
+}
+button.dialog-cancel:hover { background-color: #1c2b34; }
+button.dialog-confirm {
+    background-color: #1f6f74;
+    background-image: none;
+    box-shadow: none;
+    border: none;
+    color: #ffffff;
+    font-weight: bold;
+    border-radius: 6px;
+    padding: 8px 18px;
+}
+button.dialog-confirm:hover { background-color: #4fb6ad; }
+button.dialog-confirm-danger {
+    background-color: #b8503a;
+    background-image: none;
+    box-shadow: none;
+    border: none;
+    color: #ffffff;
+    font-weight: bold;
+    border-radius: 6px;
+    padding: 8px 18px;
+}
+button.dialog-confirm-danger:hover { background-color: #e07a5f; }
 """
 
 
@@ -1753,18 +1797,59 @@ class AssistantWindow(Gtk.Window):
             # without triggering a reload of what's already on screen.
             self.conversation_list.select_row(selected_row)
 
-    def _on_delete_conversation_clicked(self, _button, conv_id):
-        dialog = Gtk.MessageDialog(
-            transient_for=self,
-            modal=True,
-            message_type=Gtk.MessageType.WARNING,
-            buttons=Gtk.ButtonsType.YES_NO,
-            text=_("Delete this conversation?"),
+    def _show_confirm_dialog(self, heading, body, confirm_label, is_destructive=False):
+        """Themed replacement for Gtk.MessageDialog -- see the .dialog-box
+        CSS comment for why. Must be called on the main thread; callers on
+        a worker thread go through GLib.idle_add + threading.Event instead
+        (see _request_approval)."""
+        dialog = Gtk.Dialog(title=heading, transient_for=self, modal=True, destroy_with_parent=True)
+        dialog.get_style_context().add_class("themed-dialog")
+        dialog.set_default_size(420, -1)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
+        box.get_style_context().add_class("dialog-box")
+        box.set_border_width(24)
+
+        if os.path.exists(LOGO_PATH):
+            pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(LOGO_PATH, 40, 40, True)
+            logo = Gtk.Image.new_from_pixbuf(pixbuf)
+            logo.set_halign(Gtk.Align.CENTER)
+            box.pack_start(logo, False, False, 0)
+
+        heading_label = Gtk.Label(label=heading, xalign=0.5, wrap=True, justify=Gtk.Justification.CENTER)
+        heading_label.get_style_context().add_class("dialog-heading")
+        box.pack_start(heading_label, False, False, 0)
+
+        body_label = Gtk.Label(label=body, xalign=0.5, wrap=True, justify=Gtk.Justification.CENTER)
+        body_label.get_style_context().add_class("dialog-body")
+        box.pack_start(body_label, False, False, 0)
+
+        dialog.get_content_area().set_border_width(0)
+        dialog.get_content_area().add(box)
+
+        cancel_button = dialog.add_button(_("Cancel"), Gtk.ResponseType.CANCEL)
+        cancel_button.get_style_context().add_class("dialog-cancel")
+
+        confirm_button = dialog.add_button(
+            confirm_label, Gtk.ResponseType.OK
         )
-        dialog.format_secondary_text(_("This can't be undone."))
+        confirm_button.get_style_context().add_class(
+            "dialog-confirm-danger" if is_destructive else "dialog-confirm"
+        )
+
+        dialog.show_all()
         response = dialog.run()
         dialog.destroy()
-        if response != Gtk.ResponseType.YES:
+        return response == Gtk.ResponseType.OK
+
+    def _on_delete_conversation_clicked(self, _button, conv_id):
+        confirmed = self._show_confirm_dialog(
+            _("Delete this conversation?"),
+            _("This can't be undone."),
+            _("Delete"),
+            is_destructive=True,
+        )
+        if not confirmed:
             return
 
         _delete_conversation(conv_id)
@@ -2052,19 +2137,11 @@ class AssistantWindow(Gtk.Window):
         done = threading.Event()
 
         def show_dialog():
-            dialog = Gtk.MessageDialog(
-                transient_for=self,
-                modal=True,
-                message_type=Gtk.MessageType.QUESTION,
-                buttons=Gtk.ButtonsType.YES_NO,
-                text=_("Allow this action?"),
+            result["allowed"] = self._show_confirm_dialog(
+                _("Allow this action?"),
+                _("The assistant wants to {action}.").format(action=action_description),
+                _("Allow"),
             )
-            dialog.format_secondary_text(
-                _("The assistant wants to {action}.").format(action=action_description)
-            )
-            response = dialog.run()
-            dialog.destroy()
-            result["allowed"] = response == Gtk.ResponseType.YES
             done.set()
             return False
 
