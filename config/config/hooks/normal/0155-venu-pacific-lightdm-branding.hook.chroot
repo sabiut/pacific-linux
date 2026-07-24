@@ -12,10 +12,10 @@
 set -e
 
 if grep -q '^background=' /etc/lightdm/lightdm-gtk-greeter.conf; then
-    sed -i 's#^background=.*#background=/usr/share/backgrounds/venu-pacific/pacific-ocean.png#' \
+    sed -i 's#^background=.*#background=/usr/share/backgrounds/venu-pacific/volcano-v.png#' \
         /etc/lightdm/lightdm-gtk-greeter.conf
 else
-    sed -i '/^\[greeter\]/a background=/usr/share/backgrounds/venu-pacific/pacific-ocean.png' \
+    sed -i '/^\[greeter\]/a background=/usr/share/backgrounds/venu-pacific/volcano-v.png' \
         /etc/lightdm/lightdm-gtk-greeter.conf
 fi
 
