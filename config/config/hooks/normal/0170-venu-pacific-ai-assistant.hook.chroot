@@ -94,3 +94,7 @@ echo "=== Enabling the login-time model server (user service) ==="
 # reasoning. The assistant app connects to it when present and falls
 # back to spawning its own server if not.
 systemctl --global enable venu-pacific-llama.service
+# Prewarm the fixed prompt prefix right after that server loads, so the
+# first assistant reply after boot doesn't pay ~2 minutes of prompt
+# processing in front of the user -- see the unit file for details.
+systemctl --global enable venu-pacific-llama-prewarm.service

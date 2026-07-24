@@ -29,6 +29,7 @@ import re
 import shutil
 import socket
 import subprocess
+import sys
 import textwrap
 import threading
 import time
@@ -2839,4 +2840,24 @@ def main():
 
 
 if __name__ == "__main__":
+    # --prewarm: headless mode used by venu-pacific-llama-prewarm.service
+    # at login. Evaluates the fixed system-prompt + tool-schema prefix
+    # into the (login-started) server's KV cache in the background,
+    # BEFORE the user ever opens this app -- without it, the first
+    # message after every boot paid the full ~2-minute prefix eval while
+    # the user watched "Thinking...", confirmed annoying in practice
+    # across repeated real sessions. No GTK window is created in this
+    # mode, so it runs fine from a systemd user service with no display
+    # assumptions. Waits for the server to be ready first (the service
+    # may still be loading the model when this fires at login).
+    if "--prewarm" in sys.argv:
+        deadline = time.time() + STARTUP_TIMEOUT_SECONDS
+        while time.time() < deadline:
+            try:
+                urllib.request.urlopen(f"{SERVER_URL}/health", timeout=2)
+                break
+            except Exception:
+                time.sleep(2)
+        prewarm_prefix()
+        sys.exit(0)
     main()
